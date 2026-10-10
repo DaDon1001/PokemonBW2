@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Charm-Mod: benennt vier Beeren um und gibt dem Shiny Charm seine Wirkung. Schreibt eine NEUE ROM.
 
-Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds"
+Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-item N]
+  --test-item N: Test-Variante. Der Effekt haengt dann am Item mit der ID N (z. B. 17 = Trank,
+                 4 = Pokeball) statt am Shiny Charm (179). Nur zum Ausprobieren ohne Cheat.
 Die Original-ROM wird nur gelesen. Geaendert werden:
   1. Das Text-Archiv a/0/0/2 (Eintraege 63, 64, 481, 482; Zeilen 179-182): Namen/Beschreibungen.
   2. Das Overlay 36 (Kampf): Shiny Charm (Item 179). Beim naechsten wilden Pokemon wird ein
@@ -165,7 +167,10 @@ def read_overlay(rom, ov_id):
     return ov_off, fid, blz_decompress(rom[s:e])
 
 
-def patch_overlay(rom):
+ITEM_ID = 179  # Item-ID, an der der Shiny-Effekt haengt (Shiny Charm)
+
+
+def patch_overlay(rom, item_id=179):
     """Gibt das gepatchte, unkomprimierte Overlay 36 zurueck (oder bricht ab, wenn es nicht passt)."""
     ov_off, fid, ov = read_overlay(rom, OV_ID)
     if u32(rom, ov_off + 4) != OV_RAM_ADDR or len(ov) != OV_RAM_SIZE:
@@ -174,7 +179,10 @@ def patch_overlay(rom):
     if ov[off:off + len(OV_ORIGINAL)] != OV_ORIGINAL:
         sys.exit("Die Code-Stelle im Overlay 36 passt nicht zum erwarteten Original. "
                  "Diese ROM-Version (oder schon gepatcht?) wird nicht unterstuetzt. Nichts geschrieben.")
-    return ov[:off] + OV_NEW + ov[off + len(OV_NEW):]
+    new = bytearray(OV_NEW)
+    assert new[6] == 0xB3 and new[7] == 0x21, "Patch-Aufbau unerwartet"  # movs r1,#179
+    new[6] = item_id
+    return ov[:off] + bytes(new) + ov[off + len(new):]
 
 
 def find_text_narc(rom):
@@ -197,7 +205,7 @@ def patch_rom(rom):
         new_entries[idx] = patch_entry(entries[idx], idx, names)
     new_entries[DESC_ENTRY] = patch_entry(entries[DESC_ENTRY], DESC_ENTRY, descs)
     narc = build_narc(new_entries, btnf)
-    ov_new = patch_overlay(rom)
+    ov_new = patch_overlay(rom, ITEM_ID)
 
     out = bytearray(rom)
     pos = max(len(rom), u32(rom, 0x80))
@@ -230,7 +238,9 @@ def verify(new_rom, old_entries, new_entries):
     assert u16(new_rom, 0x15E) == crc16(new_rom[:0x15E]), "Header-CRC falsch"
     _, _, ov = read_overlay(new_rom, OV_ID)
     off = OV_PATCH_ADDR - OV_RAM_ADDR
-    assert len(ov) == OV_RAM_SIZE and ov[off:off + len(OV_NEW)] == OV_NEW, "Overlay-Patch nicht korrekt"
+    exp = bytearray(OV_NEW)
+    exp[6] = ITEM_ID
+    assert len(ov) == OV_RAM_SIZE and ov[off:off + len(exp)] == bytes(exp), "Overlay-Patch nicht korrekt"
 
 
 def main(src, dst):
@@ -245,10 +255,21 @@ def main(src, dst):
     print(f"Fertig: {dst} ({len(new_rom)} Bytes). Original unveraendert.")
     for ln, (name, _) in CHARMS.items():
         print(f"  Zeile {ln}: {name}")
-    print("Shiny Charm (Item 179): wirkt beim naechsten wilden Pokemon.")
+    print(f"Shiny-Effekt haengt an Item {ITEM_ID}: wirkt beim naechsten wilden Pokemon "
+          "(Item wird verbraucht).")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    if "--test-item" in args:
+        k = args.index("--test-item")
+        try:
+            ITEM_ID = int(args[k + 1])
+        except (IndexError, ValueError):
+            sys.exit(__doc__)
+        if not 1 <= ITEM_ID <= 255:
+            sys.exit("--test-item: ID muss zwischen 1 und 255 liegen.")
+        del args[k:k + 2]
+    if len(args) != 2:
         sys.exit(__doc__)
-    main(sys.argv[1], sys.argv[2])
+    main(args[0], args[1])
