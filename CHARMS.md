@@ -21,6 +21,16 @@ Gemeinsamer Mechanismus: Beim Benutzen wird im Spielstand ein "wartender Charm" 
 - [ ] Item-Datentabelle (Berries → Charms: Name, Beschreibung, Preis, Icon)
 - [ ] Code-Hooks (brauchen die genauen Adressen aus dem Report der eigenen ROM)
 
+## Technische Funde (ROM: Schwarz 2, portugiesische Fassung, IREO)
+
+- ARM9 ist BLZ-komprimiert (633856 Bytes entpackt, Basis 0x02004000). Overlays teils komprimiert (Flag in der Overlay-Tabelle).
+- 0x0201cdd8: Shiny-Pruefung (XOR der 16-Bit-Haelften von Trainer-ID und PID, `< 8`).
+- 0x0201c464 / 0x0201c4f8: Pokemon-Erzeugung, PID wird bei 0x0201c5c0 gesetzt.
+- Overlay 36, Funktion bei 0x021a0dc0: erzeugt wilde Pokemon fuer den Kampf. Das Spiel hat hier schon das echte Schluesselitem Shiny Charm (0x278): Wuerfelschleife mit 1 bzw. 3 Versuchen, bricht bei der ersten Shiny-PID ab.
+- Beutel: 0x02017354 (Beutel holen), 0x02008474 (HasItem), 0x0200842c (TakeItem, bag,item,qty,heap).
+- Shiny-Charm-Patch (28 Bytes bei 0x021a0dd6): nimmt 1x Item 179 aus dem Beutel; war es da, wird die Wuerfelzahl 130560 -> Shiny fast sicher. Kein zusaetzlicher Platz noetig. `patch_charms.py` speichert Overlay 36 dafuer unkomprimiert.
+- Ehrliche Einschraenkung: Der Charm wird automatisch beim naechsten wilden Pokemon verbraucht, solange er im Beutel liegt (kein "Benutzen"-Menue).
+
 ## Ablauf
 
 1. `python3 tools/inspect_nds.py meine_rom.nds > report.txt`

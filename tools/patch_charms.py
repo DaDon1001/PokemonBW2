@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Benennt vier Beeren in Charms um (Name + Beschreibung) und schreibt eine NEUE ROM.
+"""Charm-Mod: benennt vier Beeren um und gibt dem Shiny Charm seine Wirkung. Schreibt eine NEUE ROM.
 
 Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds"
-Die Original-ROM wird nur gelesen. Es aendert sich nur das Text-Archiv a/0/0/2
-(Eintraege 63, 64, 481, 482; Zeilen 179-182). Die Effekte der Charms sind NICHT enthalten.
+Die Original-ROM wird nur gelesen. Geaendert werden:
+  1. Das Text-Archiv a/0/0/2 (Eintraege 63, 64, 481, 482; Zeilen 179-182): Namen/Beschreibungen.
+  2. Das Overlay 36 (Kampf): Shiny Charm (Item 179). Beim naechsten wilden Pokemon wird ein
+     Charm aus dem Beutel verbraucht und das Pokemon ist (fast sicher) shiny.
+Die anderen drei Charms haben noch keine Wirkung.
 """
 import os
 import struct
@@ -17,6 +20,16 @@ TEXT_NARC = "a/0/0/2"
 NAME_ENTRIES = (64, 481, 482)
 DESC_ENTRY = 63
 PREFIX_END = 0x00FF  # Eintrag 481: Steuercode-Vorspann endet mit diesem Zeichen
+
+# --- Shiny-Charm-Patch in Overlay 36 (Funktion, die wilde Pokemon fuer den Kampf erzeugt) ---
+OV_ID = 36
+OV_PATCH_ADDR = 0x021A0DD6
+# Original: Beutel holen, Item 0x278 (Schluesselitem Shiny Charm) pruefen, Wuerfelzahl 1 bzw. 3
+OV_ORIGINAL = bytes.fromhex("2868012676f6bbfa9e2189000122042367f645fb002800d0b61c301c")
+# Neu: Beutel holen, 1x Item 179 entfernen; war es da, Wuerfelzahl 130560 statt 1
+OV_NEW = bytes.fromhex("286876f6bcfab3210122042367f623fb0126002801d0ff267602301c")
+OV_RAM_ADDR = 0x0217F600
+OV_RAM_SIZE = 0x561A0
 
 CHARMS = {  # Zeile: (Name, Beschreibung)
     179: ("Shiny Charm",
@@ -112,6 +125,58 @@ def build_narc(entries, btnf):
     return b"NARC" + struct.pack("<HHIHH", 0xFFFE, 0x0100, total, 0x10, 3) + btaf + btnf + gmif
 
 
+def blz_decompress(data):
+    """Entpackt ein BLZ-komprimiertes Overlay (rueckwaerts laufender LZ77)."""
+    inc = u32(data, len(data) - 4)
+    if inc == 0:
+        return bytes(data)
+    hdr = data[-5]
+    enc = u32(data, len(data) - 8) & 0xFFFFFF
+    dec = len(data) - enc
+    raw = bytearray(len(data) + inc)
+    raw[:dec] = data[:dec]
+    pak, rp, mask, flags = len(data) - hdr, len(raw), 0, 0
+    while rp > dec:
+        if mask == 0:
+            pak -= 1
+            flags, mask = data[pak], 0x80
+        if flags & mask:
+            pak -= 2
+            b1, b0 = data[pak + 1], data[pak]
+            length, pos = (b1 >> 4) + 3, (((b1 & 0xF) << 8) | b0) + 3
+            for _ in range(length):
+                rp -= 1
+                raw[rp] = raw[rp + pos]
+                if rp <= dec:
+                    break
+        else:
+            pak -= 1
+            rp -= 1
+            raw[rp] = data[pak]
+        mask >>= 1
+    return bytes(raw)
+
+
+def read_overlay(rom, ov_id):
+    """Gibt (Tabellenoffset, file_id, entpackte Daten) zurueck."""
+    ov_off = u32(rom, 0x50) + ov_id * 32
+    fid = u32(rom, ov_off + 24)
+    s, e = struct.unpack_from("<II", rom, u32(rom, 0x48) + fid * 8)
+    return ov_off, fid, blz_decompress(rom[s:e])
+
+
+def patch_overlay(rom):
+    """Gibt das gepatchte, unkomprimierte Overlay 36 zurueck (oder bricht ab, wenn es nicht passt)."""
+    ov_off, fid, ov = read_overlay(rom, OV_ID)
+    if u32(rom, ov_off + 4) != OV_RAM_ADDR or len(ov) != OV_RAM_SIZE:
+        sys.exit("Overlay 36 hat nicht die erwartete Groesse/Adresse. Diese ROM-Version passt nicht.")
+    off = OV_PATCH_ADDR - OV_RAM_ADDR
+    if ov[off:off + len(OV_ORIGINAL)] != OV_ORIGINAL:
+        sys.exit("Die Code-Stelle im Overlay 36 passt nicht zum erwarteten Original. "
+                 "Diese ROM-Version (oder schon gepatcht?) wird nicht unterstuetzt. Nichts geschrieben.")
+    return ov[:off] + OV_NEW + ov[off + len(OV_NEW):]
+
+
 def find_text_narc(rom):
     paths = parse_fnt(rom, u32(rom, 0x40), u32(rom, 0x44))
     fid = next((i for i, p in paths.items() if p == TEXT_NARC), None)
@@ -132,15 +197,23 @@ def patch_rom(rom):
         new_entries[idx] = patch_entry(entries[idx], idx, names)
     new_entries[DESC_ENTRY] = patch_entry(entries[DESC_ENTRY], DESC_ENTRY, descs)
     narc = build_narc(new_entries, btnf)
+    ov_new = patch_overlay(rom)
 
     out = bytearray(rom)
-    used = u32(rom, 0x80)
-    pos = max(len(rom), used)
-    pos += -pos % 0x200
-    out += b"\0" * (pos - len(out))
-    out += narc
-    struct.pack_into("<II", out, u32(rom, 0x48) + fid * 8, pos, pos + len(narc))
-    struct.pack_into("<I", out, 0x80, pos + len(narc))
+    pos = max(len(rom), u32(rom, 0x80))
+    for file_id, blob in ((fid, narc), (None, ov_new)):
+        pos += -pos % 0x200
+        out += b"\0" * (pos - len(out))
+        out += blob
+        if file_id is None:  # Overlay 36: unkomprimiert, FAT und Overlay-Tabelle anpassen
+            ov_off = u32(rom, 0x50) + OV_ID * 32
+            ov_fid = u32(rom, ov_off + 24)
+            struct.pack_into("<II", out, u32(rom, 0x48) + ov_fid * 8, pos, pos + len(blob))
+            struct.pack_into("<I", out, ov_off + 28, 0x02000000)
+        else:
+            struct.pack_into("<II", out, u32(rom, 0x48) + file_id * 8, pos, pos + len(blob))
+        pos += len(blob)
+    struct.pack_into("<I", out, 0x80, pos)
     struct.pack_into("<H", out, 0x15E, crc16(bytes(out[:0x15E])))
     return bytes(out), entries, new_entries
 
@@ -155,6 +228,9 @@ def verify(new_rom, old_entries, new_entries):
         if i not in changed:
             assert g == o, f"Eintrag {i} ungewollt veraendert"
     assert u16(new_rom, 0x15E) == crc16(new_rom[:0x15E]), "Header-CRC falsch"
+    _, _, ov = read_overlay(new_rom, OV_ID)
+    off = OV_PATCH_ADDR - OV_RAM_ADDR
+    assert len(ov) == OV_RAM_SIZE and ov[off:off + len(OV_NEW)] == OV_NEW, "Overlay-Patch nicht korrekt"
 
 
 def main(src, dst):
@@ -169,6 +245,7 @@ def main(src, dst):
     print(f"Fertig: {dst} ({len(new_rom)} Bytes). Original unveraendert.")
     for ln, (name, _) in CHARMS.items():
         print(f"  Zeile {ln}: {name}")
+    print("Shiny Charm (Item 179): wirkt beim naechsten wilden Pokemon.")
 
 
 if __name__ == "__main__":
