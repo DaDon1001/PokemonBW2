@@ -33,6 +33,7 @@ Gemeinsamer Mechanismus: Beim Benutzen wird im Spielstand ein "wartender Charm" 
 - [x] Option `--quiet-dialog`: ersetzt alle Dialogzeilen (Warte-auf-Taste-Code F000 BE01 0000) in a/0/0/2 und a/0/0/3 durch '.' + denselben Code.
 - [x] **Bodenfunde**: a/0/5/6 Datei 1241 = 213 Ball-Skripte (je 30 Bytes: var0x8000=Item, 0x8001=Menge 1, 0x8002=Merker, Aufruf des gemeinsamen Aufheb-Skripts 2811; die Meldung nimmt den Item-Namen aus der Variable). Option `--ground-charms P` macht jeden Ball mit P % Chance zu einem zufaelligen Charm (`--seed N` fuer Reproduzierbarkeit). Reine Datenaenderung.
 - Hinweis: Das Skript-Archiv hat Offset-Liste (u32), Skripte beginnen bei 4*i+4+Offset; das Kennzeichen 0xFD13 steht bei normalen Skriptdateien nach der Liste.
+- [x] **Randomizer** (`tools/randomizer.py`): `--random-wild` (a/1/2/7, 232-Byte-Bloecke mit 56 Slots ab Offset 8: u16 Art+Form, u8 min, u8 max; jede vorkommende Art wird einer anderen zugeordnet), `--random-starters` (Tabelle [495,498,501] in Overlay 316 bei 0x0219FA94), `--allow-legendary`, `--seed N`. Nicht enthalten: Static-Begegnungen, Geschenk-Pokemon, Trainer-Teams. Starter-Teil ungetestet im Spiel.
 - [ ] Item-Datentabelle (Berries → Charms: Name, Beschreibung, Preis, Icon)
 - [ ] Code-Hooks (brauchen die genauen Adressen aus dem Report der eigenen ROM)
 

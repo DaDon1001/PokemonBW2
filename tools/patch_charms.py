@@ -10,6 +10,10 @@ Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-item
   --ground-charms P: Jeder Ball auf dem Boden (213 Stueck, Skriptdatei a/0/5/6 Nr. 1241) wird mit P Prozent
       Chance zu einem zufaelligen Charm (Meldung "... gefunden" passt automatisch). --seed N legt den
       Zufall fest (sonst wird er zufaellig gewaehlt und angezeigt).
+  --random-wild: Alle wilden Begegnungen (a/1/2/7) werden zufaellig umbesetzt: jede vorkommende Art wird
+      einer anderen zufaelligen Art zugeordnet, Level und Raten bleiben.
+  --random-starters: Die drei Starter (Overlay 316) werden zufaellige Arten.
+  --allow-legendary: Beim Zufall (Wild/Starter) auch legendaere/mythische Pokemon zulassen (sonst nicht).
   --quiet-dialog: Ersetzt jeden gesprochenen Text (Dialoge mit "Warte auf Taste"-Steuercode) durch
       einen einzelnen Punkt. Alles geht schneller; Menues, Itemnamen und Kampftexte bleiben.
 Die Original-ROM wird nur gelesen. Geaendert werden:
@@ -40,6 +44,7 @@ import hashlib  # noqa: E402
 import random  # noqa: E402
 
 import charm_code as CC  # noqa: E402
+import randomizer as R  # noqa: E402
 
 OV_ID = 36
 OV_RAM_ADDR = 0x0217F600
@@ -261,6 +266,7 @@ def find_text_narc(rom):
 WAIT_TAG = [0xF000, 0xBE01, 0x0000]  # "Warte auf Taste" (Seitenwechsel im Dialog)
 QUIET_WORDS = [ord("."), 0xF000, 0xBE01, 0x0000, 0xFFFF]
 DIALOG_NARCS = ("a/0/0/2", "a/0/0/3")
+WILD_NARC = "a/1/2/7"
 GROUND_NARC = "a/0/5/6"
 GROUND_ENTRY = 1241  # Skriptdatei mit den Ball-Skripten (je 30 Bytes, gleicher Aufbau)
 GROUND_SCRIPT_LEN = 30
@@ -293,6 +299,20 @@ def quiet_entries(entries):
         out.append(nd)
         total += c
     return out, total
+
+
+def patch_starters(rom, picks):
+    """Gibt das gepatchte Overlay 316 (Starter-Tabelle) zurueck."""
+    ov_off, fid, ov = read_overlay(rom, R.STARTER_OV_ID)
+    if u32(rom, ov_off + 4) != R.STARTER_OV_RAM or len(ov) != R.STARTER_OV_SIZE:
+        sys.exit("Overlay 316 hat nicht die erwartete Groesse/Adresse. Diese ROM-Version passt nicht.")
+    off = R.STARTER_TABLE_ADDR - R.STARTER_OV_RAM
+    if struct.unpack_from("<6H", ov, off) != R.STARTER_ORIGINAL:
+        sys.exit("Die Starter-Tabelle passt nicht zum erwarteten Original. Diese ROM-Version "
+                 "(oder schon gepatcht?) wird nicht unterstuetzt. Nichts geschrieben.")
+    ov = bytearray(ov)
+    struct.pack_into("<3H", ov, off, *picks)
+    return bytes(ov)
 
 
 def ground_scripts(data):
@@ -350,7 +370,7 @@ def charm_patch(baseline):
     return out
 
 
-def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False, ground=None):
+def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False, ground=None, rand=None):
     texts = expected_text(rom, quiet)
     fid, entries, baseline, btnf, _ = texts[TEXT_NARC]
     new_entries = charm_patch(baseline)
@@ -366,6 +386,21 @@ def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False, ground=None):
         gnew[GROUND_ENTRY] = new_g
         texts["ground"] = (gf, gentries, gnew, parse_narc_blocks(rom, gs), changed)
         blobs.append(("text", gf, build_narc(gnew, texts["ground"][3])))
+    extra_ovs = []
+    if rand and rand["wild"]:
+        wf, ws, we = find_narc(rom, WILD_NARC)
+        wentries = read_narc(rom, ws, we)
+        rng = random.Random(rand["seed"] * 7 + 1)
+        pool = R.species_pool(rand["legendary"])
+        mapping = R.make_mapping(R.species_in_wild(wentries), pool, rng)
+        wnew = R.randomize_wild(wentries, mapping)
+        texts["wild"] = (wf, wentries, wnew, parse_narc_blocks(rom, ws), mapping)
+        blobs.append(("text", wf, build_narc(wnew, texts["wild"][3])))
+    if rand and rand["starters"]:
+        rng = random.Random(rand["seed"] * 7 + 2)
+        picks = R.pick_starters(R.species_pool(rand["legendary"]), rng)
+        texts["starters"] = picks
+        extra_ovs.append(("ov", R.STARTER_OV_ID, patch_starters(rom, picks)))
     ov_new = patch_overlay(rom)
     a9_new = patch_arm9(rom, item_ids)
 
@@ -373,15 +408,16 @@ def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False, ground=None):
     ov_off = u32(rom, 0x50) + OV_ID * 32
     fat = u32(rom, 0x48)
     pos = max(len(rom), u32(rom, 0x80))
-    for kind, file_id, blob in blobs + [("ov", None, ov_new), ("arm9", None, a9_new)]:
+    for kind, file_id, blob in blobs + [("ov", OV_ID, ov_new)] + extra_ovs + [("arm9", None, a9_new)]:
         pos += -pos % 0x200
         out += b"\0" * (pos - len(out))
         out += blob
         if kind == "text":
             struct.pack_into("<II", out, fat + file_id * 8, pos, pos + len(blob))
         elif kind == "ov":  # Overlay 36 unkomprimiert: FAT und Overlay-Tabelle anpassen
-            struct.pack_into("<II", out, fat + u32(rom, ov_off + 24) * 8, pos, pos + len(blob))
-            struct.pack_into("<I", out, ov_off + 28, 0x02000000)
+            o_off = u32(rom, 0x50) + file_id * 32
+            struct.pack_into("<II", out, fat + u32(rom, o_off + 24) * 8, pos, pos + len(blob))
+            struct.pack_into("<I", out, o_off + 28, 0x02000000)
         else:  # ARM9 unkomprimiert: Kopf zeigt auf die neue Position und Groesse
             struct.pack_into("<I", out, 0x20, pos)
             struct.pack_into("<I", out, 0x2C, len(blob))
@@ -422,6 +458,17 @@ def verify(old_rom, new_rom, texts, item_ids, quiet=False):
         assert g == n, f"Eintrag {i} nach dem Schreiben anders"
         if i not in changed:
             assert g == b0, f"Eintrag {i} ungewollt veraendert"
+    if "wild" in texts:
+        wf, wold, wnew, _, _ = texts["wild"]
+        ws, we = struct.unpack_from("<II", new_rom, u32(new_rom, 0x48) + wf * 8)
+        assert read_narc(new_rom, ws, we) == wnew, "Begegnungen nach dem Schreiben anders"
+    if "starters" in texts:
+        _, _, sov_old = read_overlay(old_rom, R.STARTER_OV_ID)
+        _, _, sov_new = read_overlay(new_rom, R.STARTER_OV_ID)
+        off = R.STARTER_TABLE_ADDR - R.STARTER_OV_RAM
+        assert struct.unpack_from("<3H", sov_new, off) == tuple(texts["starters"]), "Starter falsch"
+        for lo, hi in diff_ranges(sov_old, sov_new):
+            assert off <= lo and hi <= off + 6, "Overlay 316 ausserhalb der Tabelle veraendert"
     if "ground" in texts:
         gf, gold, gnew, _, changed = texts["ground"]
         gs, ge = struct.unpack_from("<II", new_rom, u32(new_rom, 0x48) + gf * 8)
@@ -435,7 +482,7 @@ def verify(old_rom, new_rom, texts, item_ids, quiet=False):
         f3, s3, e3 = find_narc(new_rom, "a/0/0/3")
         got3 = read_narc(new_rom, s3, e3)
         assert got3 == texts["a/0/0/3"][2], "Dialog-Archiv a/0/0/3 stimmt nicht"
-        assert sum(t[4] for k, t in texts.items() if k != "ground") > 0, "Keine Dialogzeilen gefunden"
+        assert sum(texts[k][4] for k in DIALOG_NARCS if k in texts) > 0, "Keine Dialogzeilen gefunden"
     assert u16(new_rom, 0x15E) == crc16(new_rom[:0x15E]), "Header-CRC falsch"
     # Overlay 36: nur die Einhaengestellen duerfen abweichen
     _, _, ov_old = read_overlay(old_rom, OV_ID)
@@ -462,12 +509,12 @@ def verify(old_rom, new_rom, texts, item_ids, quiet=False):
     assert u32(new_rom, 0x2C) == len(a9_new), "ARM9-Groesse im Kopf falsch"
 
 
-def main(src, dst, item_ids=DEFAULT_ITEMS, quiet=False, ground=None):
+def main(src, dst, item_ids=DEFAULT_ITEMS, quiet=False, ground=None, rand=None):
     if os.path.abspath(src) == os.path.abspath(dst):
         sys.exit("Ziel darf nicht die Original-ROM sein.")
     with open(src, "rb") as f:
         rom = f.read()
-    new_rom, old_entries, new_entries, texts = patch_rom(rom, item_ids, quiet, ground)
+    new_rom, old_entries, new_entries, texts = patch_rom(rom, item_ids, quiet, ground, rand)
     verify(rom, new_rom, texts, item_ids, quiet)
     with open(dst, "xb") as f:
         f.write(new_rom)
@@ -478,8 +525,12 @@ def main(src, dst, item_ids=DEFAULT_ITEMS, quiet=False, ground=None):
     print("Wirkung: beim naechsten wilden Pokemon wird je 1 Charm aus dem Beutel verbraucht.")
     print(f"Finden: wilde Pokemon tragen mit Chance 1 zu {FIND_RATE} einen zufaelligen Charm.")
     if quiet:
-        n = sum(t[4] for k, t in texts.items() if k != "ground")
+        n = sum(texts[k][4] for k in DIALOG_NARCS if k in texts)
         print(f"Dialoge: {n} gesprochene Textzeilen durch '.' ersetzt.")
+    if rand and rand["wild"]:
+        print(f"Wilde Begegnungen: {len(texts['wild'][4])} Arten neu zugeordnet (Zufall-Startwert {rand['seed']}).")
+    if rand and rand["starters"]:
+        print("Starter (Pokedex-Nummern): " + ", ".join(str(x) for x in texts["starters"]))
     if ground:
         ch = texts["ground"][4]
         print(f"Boden-Charms: {len(ch)} von 213 Baellen sind jetzt Charms ({ground[0]} %, Zufall-Startwert {ground[1]}).")
@@ -497,6 +548,14 @@ if __name__ == "__main__":
         if len(items) != 4 or not all(1 <= x <= 255 for x in items) or len(set(items)) != 4:
             sys.exit("--test-items: genau vier verschiedene IDs zwischen 1 und 255, z. B. 17,18,19,20")
         del args[k:k + 2]
+    seed = random.SystemRandom().randrange(1, 10**6)
+    if "--seed" in args:
+        k = args.index("--seed")
+        try:
+            seed = int(args[k + 1])
+        except (IndexError, ValueError):
+            sys.exit(__doc__)
+        del args[k:k + 2]
     ground = None
     if "--ground-charms" in args:
         k = args.index("--ground-charms")
@@ -507,15 +566,14 @@ if __name__ == "__main__":
         if not 0 < pct <= 100:
             sys.exit("--ground-charms: Prozent zwischen 1 und 100 (z. B. 20).")
         del args[k:k + 2]
-        seed = random.SystemRandom().randrange(1, 10**6)
-        if "--seed" in args:
-            k = args.index("--seed")
-            try:
-                seed = int(args[k + 1])
-            except (IndexError, ValueError):
-                sys.exit(__doc__)
-            del args[k:k + 2]
         ground = (pct, seed)
+    rand = {"wild": "--random-wild" in args, "starters": "--random-starters" in args,
+            "legendary": "--allow-legendary" in args, "seed": seed}
+    for flag in ("--random-wild", "--random-starters", "--allow-legendary"):
+        if flag in args:
+            args.remove(flag)
+    if not (rand["wild"] or rand["starters"]):
+        rand = None
     quiet = "--quiet-dialog" in args
     if quiet:
         args.remove("--quiet-dialog")
@@ -531,4 +589,4 @@ if __name__ == "__main__":
     if len(args) != 2:
         sys.exit(__doc__)
     ITEM_IDS = items
-    main(args[0], args[1], items, quiet, ground)
+    main(args[0], args[1], items, quiet, ground, rand)
