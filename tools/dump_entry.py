@@ -3,6 +3,7 @@
 
 Aufruf:  python tools/dump_entry.py rom.nds 40 > archiv40.txt
          (mehrere Archiv-Nummern moeglich: ... 40 41)
+         Mit Zeilenbereich: ... 384:0-60   (nur Zeilen 0 bis 60 von Archiv 384)
 """
 import os
 import struct
@@ -21,15 +22,21 @@ def main(path, idxs):
     fid = next(i for i, p in paths.items() if p == "a/0/0/2")
     s, e = struct.unpack_from("<II", rom, u32(rom, 0x48) + fid * 8)
     entries = read_narc(rom, s, e)
-    for idx in idxs:
+    for spec in idxs:
+        idx, _, rng = spec.partition(":")
+        idx = int(idx)
         data = entries[idx]
         n, base = u16(data, 2), u32(data, 0x0C)
-        print(f"== Archiv {idx}: {n} Zeilen")
-        for i in range(n):
+        lo, hi = 0, n - 1
+        if rng:
+            a, _, b = rng.partition("-")
+            lo, hi = int(a), min(int(b or a), n - 1)
+        print(f"== Archiv {idx}: {n} Zeilen (gezeigt: {lo}-{hi})")
+        for i in range(lo, hi + 1):
             print(f"{i:3d}: {decode_line(data, base, i)[:200]}")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         sys.exit(__doc__)
-    main(sys.argv[1], [int(x) for x in sys.argv[2:]])
+    main(sys.argv[1], sys.argv[2:])
