@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Charm-Mod fuer Pokemon Schwarz 2: vier Beeren werden zu Charms. Schreibt eine NEUE ROM.
 
-Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-items A,B,C,D]
+Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-items A,B,C,D] [--find-rate N]
+  --find-rate N: Fundchance. Jedes wilde Pokemon traegt mit Chance 1 zu N einen zufaelligen Charm
+      als Item (Standard 20). Zum Testen z. B. 1 (jedes wilde Pokemon traegt einen Charm).
   --test-items A,B,C,D: Test-Variante. Statt der Beeren (179-182) werden vier andere Item-IDs
       (1-255) als Charms benutzt, z. B. 17,18,19,20 (Tranke). Reihenfolge: Shiny, IV, Legendary,
       Static. Nur zum Ausprobieren ohne Cheat.
@@ -9,6 +11,7 @@ Die Original-ROM wird nur gelesen. Geaendert werden:
   1. Text-Archiv a/0/0/2 (Eintraege 63, 64, 481, 482; Zeilen 179-182): Namen/Beschreibungen.
   2. Overlay 36 (Kampf): drei Einhaengestellen in der Funktion, die wilde Pokemon erzeugt.
   3. ARM9 (wird dafuer entpackt gespeichert): Zusatzfunktionen in einem ungenutzten Block.
+Finden: Wilde Pokemon tragen mit Chance 1 zu N einen zufaelligen Charm (Fangen, dann Item nehmen).
 Wirkung: Beim naechsten wilden Pokemon wird je 1 Charm aus dem Beutel verbraucht:
   Shiny Charm (179)    -> das Pokemon ist (fast sicher) shiny
   100% IV Charm (180)  -> alle IVs 31
@@ -189,9 +192,16 @@ def patch_overlay(rom):
     return bytes(ov)
 
 
-def cave_blob(item_ids):
-    """Zusatzcode mit den gewuenschten Item-IDs (Standard 179-182)."""
+FIND_RATE = CC.FIND_RATE_DEFAULT  # wilde Pokemon tragen mit Chance 1 zu N einen Charm
+
+
+def cave_blob(item_ids, find_rate=None):
+    """Zusatzcode mit den gewuenschten Item-IDs (Standard 179-182) und Fundchance 1 zu N."""
+    find_rate = FIND_RATE if find_rate is None else find_rate
     blob = bytearray(CC.CAVE_BLOB)
+    o = CC.FIND_RATE_OFFSET
+    assert blob[o] == CC.FIND_RATE_DEFAULT and blob[o + 1] == 0x20, "Zusatzcode unerwartet aufgebaut"
+    blob[o] = find_rate
     for off, default, new in zip(CC.ITEM_ID_OFFSETS, DEFAULT_ITEMS, item_ids):
         assert blob[off] == default and blob[off + 1] == 0x21, "Zusatzcode unerwartet aufgebaut"
         blob[off] = new
@@ -215,7 +225,7 @@ def read_arm9(rom):
     return blz_decompress(raw)
 
 
-def patch_arm9(rom, item_ids):
+def patch_arm9(rom, item_ids, find_rate=None):
     """Gibt den entpackten, gepatchten ARM9 zurueck."""
     a9 = bytearray(read_arm9(rom))
     cave = CC.CAVE_ADDR - ARM9_BASE
@@ -223,7 +233,7 @@ def patch_arm9(rom, item_ids):
     if hashlib.sha1(bytes(a9[cave:cave + n])).hexdigest() != CC.CAVE_ORIG_SHA1:
         sys.exit("Der Platz fuer den Zusatzcode im ARM9 passt nicht zum erwarteten Original. "
                  "Diese ROM-Version (oder schon gepatcht?) wird nicht unterstuetzt. Nichts geschrieben.")
-    a9[cave:cave + n] = cave_blob(item_ids)
+    a9[cave:cave + n] = cave_blob(item_ids, find_rate)
     cse = module_params_offset(a9) + 0x14  # "compressed_static_end": 0 = nicht komprimiert
     struct.pack_into("<I", a9, cse, 0)
     return bytes(a9)
@@ -343,6 +353,7 @@ def main(src, dst, item_ids=DEFAULT_ITEMS):
     for n, i in zip(names, item_ids):
         print(f"  {n}: Item {i}")
     print("Wirkung: beim naechsten wilden Pokemon wird je 1 Charm aus dem Beutel verbraucht.")
+    print(f"Finden: wilde Pokemon tragen mit Chance 1 zu {FIND_RATE} einen zufaelligen Charm.")
 
 
 if __name__ == "__main__":
@@ -356,6 +367,15 @@ if __name__ == "__main__":
             sys.exit(__doc__)
         if len(items) != 4 or not all(1 <= x <= 255 for x in items) or len(set(items)) != 4:
             sys.exit("--test-items: genau vier verschiedene IDs zwischen 1 und 255, z. B. 17,18,19,20")
+        del args[k:k + 2]
+    if "--find-rate" in args:
+        k = args.index("--find-rate")
+        try:
+            FIND_RATE = int(args[k + 1])
+        except (IndexError, ValueError):
+            sys.exit(__doc__)
+        if not 1 <= FIND_RATE <= 255:
+            sys.exit("--find-rate: Zahl zwischen 1 und 255 (1 = jedes wilde Pokemon traegt einen Charm).")
         del args[k:k + 2]
     if len(args) != 2:
         sys.exit(__doc__)

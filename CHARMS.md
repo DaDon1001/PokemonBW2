@@ -26,6 +26,10 @@ Gemeinsamer Mechanismus: Beim Benutzen wird im Spielstand ein "wartender Charm" 
   - IV-Charm: IV-Parameter 0x3FFFFFFF statt 0xFFFFFFFF (5 Bit je Wert, alle 31).
   - Legendary/Static: Art in der Begegnungsstruktur ueberschrieben (Level bleibt wie die Begegnung).
   - Tests: `tools/dev/` (Emulator-Tests der Hilfsfunktionen mit Unicorn, Testrom-Bau).
+- [x] Alle vier Charm-Effekte im Spiel getestet: funktionieren, auch kombiniert.
+- [x] Poke-Markt-Lieferung gestrichen (Nutzerwunsch). Stattdessen **Finden**: Wilde Pokemon tragen mit Chance 1 zu N (Standard 20) einen zufaelligen Charm als Item (Overlay 36, 0x021a0e56 -> helper_hold). Faengt man das Pokemon, kann man das Item nehmen. Parameter `--find-rate N`.
+- [ ] Weitere Fund-Quellen (Boden, versteckte Items, Kampfbelohnung) und Spielmeldungen: noch offen. Funktion zum Item-Hinzufuegen: 0x02008268 (bag,item,qty,heap).
+- Hinweis: Textarchiv 40 = Festival-Missionen, 384 = C-Gear-Anrufe (nicht der Markt).
 - [ ] Item-Datentabelle (Berries → Charms: Name, Beschreibung, Preis, Icon)
 - [ ] Code-Hooks (brauchen die genauen Adressen aus dem Report der eigenen ROM)
 
