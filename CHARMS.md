@@ -18,6 +18,7 @@ Gemeinsamer Mechanismus: Beim Benutzen wird im Spielstand ein "wartender Charm" 
 - [x] Item-Daten: `a/0/2/4`, 639 Einträge à **36 Bytes** (nicht 44). Feld 0x00 = Preis/10 (Trank 30 → 300, Pokéball 20 → 200). Zuordnung der Beeren-IDs (149..212) bestätigt: z. B. Lum (157) hat Status-Maske 0x3f, Pomeg-Beeren (169..174) haben -10 EV (0xf6).
 - [x] Texte: `a/0/0/2`, Zeilenschluessel `0x7C89 + 0x2983*Zeile`, Zeilentabelle im Klartext. Eintrag 64 = Namen, 63 = Beschreibungen, 481/482 = weitere Namensvarianten (481 mit Steuercode-Vorspann). ROM ist eine portugiesische Fassung.
 - [x] `tools/patch_charms.py`: benennt die Zeilen 179-182 um (nur Text, keine Effekte), schreibt eine neue ROM.
+- [x] **Shiny Charm getestet (melonDS): wilder Encounter shiny, Charm verbraucht.** (Erst mit --test-item 17 Trank, dann mit dem echten Item 179.)
 - [ ] Item-Datentabelle (Berries → Charms: Name, Beschreibung, Preis, Icon)
 - [ ] Code-Hooks (brauchen die genauen Adressen aus dem Report der eigenen ROM)
 
