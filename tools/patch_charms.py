@@ -557,10 +557,21 @@ def verify(old_rom, new_rom, texts, item_ids, quiet=False):
     a9_old, a9_new = read_arm9(old_rom), read_arm9(new_rom)
     cave = CC.CAVE_ADDR - ARM9_BASE
     cse = module_params_offset(a9_new) + 0x14
-    # In den ersten 0x4000 Bytes (Secure Area) darf nur das Kompressions-Feld abweichen
+    # In den ersten 0x4000 Bytes (Secure Area) darf hoechstens das Kompressions-Feld abweichen
     # (War der ARM9 schon entpackt, z. B. nach dem ZX-Randomizer, steht das Feld schon auf 0: keine Abweichung.)
-    expected = [] if u32(a9_old, cse) == 0 else [(cse, cse + 4)]
-    assert diff_ranges(a9_old[:0x4000], a9_new[:0x4000]) == expected, "Secure Area veraendert"
+    sec = diff_ranges(a9_old[:0x4000], a9_new[:0x4000])
+    if any(not (lo >= cse and hi <= cse + 4) for lo, hi in sec):
+        print("DIAGNOSE (bitte komplett an Claude schicken):")
+        print(f"  ARM9 alt: Laenge {len(a9_old)}, neu: Laenge {len(a9_new)}")
+        print(f"  Modulparameter-Kennung bei {cse - 0x14 + 0x1C:#x}, Feld compressed_static_end bei {cse:#x}:"
+              f" alt={u32(a9_old, cse):#x}, neu={u32(a9_new, cse):#x}")
+        print(f"  Abweichende Bereiche in den ersten 0x4000 Bytes: {[(hex(x), hex(y)) for x, y in sec][:10]}")
+        print(f"  Kopf: ARM9-Offset {u32(old_rom, 0x20):#x}, Groesse {u32(old_rom, 0x2C)}")
+        raw = old_rom[u32(old_rom, 0x20):u32(old_rom, 0x20) + 16]
+        print(f"  Erste ARM9-Bytes (alt, roh): {bytes(raw).hex()}")
+        print(f"  Letzte ARM9-Bytes (alt, roh): "
+              f"{bytes(old_rom[u32(old_rom, 0x20) + u32(old_rom, 0x2C) - 12:u32(old_rom, 0x20) + u32(old_rom, 0x2C)]).hex()}")
+        sys.exit("Secure Area unerwartet veraendert. Nichts geschrieben.")
     if u16(old_rom, 0x6C) == crc16(a9_old[:0x4000]):
         assert u16(new_rom, 0x6C) == crc16(a9_new[:0x4000]), "Secure-Area-CRC nicht nachgezogen"
     allowed = [(cave, cave + len(CC.CAVE_BLOB)), (cse, cse + 4)]
