@@ -21,9 +21,14 @@ Ziel: ungenutzte Beeren werden zu Charms mit neuen Effekten.
 2. `report.txt` weitergeben (die ROM selbst bleibt lokal).
 3. Daraus wird der Patch für die jeweilige ROM-Version gebaut.
 
-## Offene Entscheidungen
+## Entscheidungen
 
-- Welche Beeren werden ersetzt? (Vorschlag: solche, die man nie braucht)
-- Verbrauchen die Charms sich bei Benutzung oder wirken sie dauerhaft?
-- Wo bekommt man sie (Start-Inventar, NPC, Shop)?
+- Charms verbrauchen sich bei der Benutzung (einmaliger Effekt).
+- Ersetzt werden die seltensten, praktisch nie genutzten Beeren (genaue Auswahl nach dem ROM-Report).
+- Erhalt: Pro Poké-Markt gibt es kostenlos genau **einen** der vier Charms zur Auswahl. Pro Markt nur einmal (Merk-Flag pro Markt im Spielstand).
+
+## Offene Fragen
+
+- Gilt "ein Charm pro Markt" einmalig pro Markt (Annahme) oder einmal pro Tag/Besuch?
 - Wie soll der Legendary Charm funktionieren (zufällig oder wählbar)?
+- Wo im Spielstand liegt das Merk-Flag (freies Event-Flag/Work in BW2 nötig, kommt aus dem Report)?
