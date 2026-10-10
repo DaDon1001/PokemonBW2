@@ -12,6 +12,8 @@ Ziel: ungenutzte Beeren werden zu Charms mit neuen Effekten.
 ## Stand
 
 - [x] `tools/inspect_nds.py` – liest Header, Hashes, Overlays und NARC-Liste der ROM (nur lesend, gibt nur Text aus).
+- [x] ROM identifiziert: Pokémon Schwarz 2 (EN), Gamecode IREO, v0, Header-CRC ok.
+- [x] Item-Daten: `a/0/2/4`, 639 Einträge à **36 Bytes** (nicht 44). Feld 0x00 = Preis/10 (Trank 30 → 300, Pokéball 20 → 200). Zuordnung der Beeren-IDs (149..212) bestätigt: z. B. Lum (157) hat Status-Maske 0x3f, Pomeg-Beeren (169..174) haben -10 EV (0xf6).
 - [ ] Item-Datentabelle (Berries → Charms: Name, Beschreibung, Preis, Icon)
 - [ ] Code-Hooks (brauchen die genauen Adressen aus dem Report der eigenen ROM)
 
@@ -24,6 +26,7 @@ Ziel: ungenutzte Beeren werden zu Charms mit neuen Effekten.
 ## Entscheidungen
 
 - Charms verbrauchen sich bei der Benutzung (einmaliger Effekt).
+- Kandidaten (Beeren ohne jeden Nutzen in Gen 5, Heil-/Kampfeffekt-Felder leer): 164..168 (Razz, Bluk, Nanab, Wepear, Pinap) und 175..183 (Cornn, Magost, Rabuta, Nomel, Spelon, Pamtre, Watmel, Durin, Belue). Vorschlag: Spelon (179), Pamtre (180), Watmel (181), Durin (182).
 - Ersetzt werden die seltensten, praktisch nie genutzten Beeren (genaue Auswahl nach dem ROM-Report).
 - Erhalt: Pro Poké-Markt gibt es kostenlos genau **einen** der vier Charms zur Auswahl. Pro Markt nur einmal (Merk-Flag pro Markt im Spielstand).
 
