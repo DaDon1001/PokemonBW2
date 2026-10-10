@@ -31,6 +31,8 @@ Gemeinsamer Mechanismus: Beim Benutzen wird im Spielstand ein "wartender Charm" 
 - [ ] Weitere Fund-Quellen (Boden, versteckte Items, Kampfbelohnung) und Spielmeldungen: noch offen. Funktion zum Item-Hinzufuegen: 0x02008268 (bag,item,qty,heap).
 - Hinweis: Textarchiv 40 = Festival-Missionen, 384 = C-Gear-Anrufe (nicht der Markt).
 - [x] Option `--quiet-dialog`: ersetzt alle Dialogzeilen (Warte-auf-Taste-Code F000 BE01 0000) in a/0/0/2 und a/0/0/3 durch '.' + denselben Code.
+- [x] **Bodenfunde**: a/0/5/6 Datei 1241 = 213 Ball-Skripte (je 30 Bytes: var0x8000=Item, 0x8001=Menge 1, 0x8002=Merker, Aufruf des gemeinsamen Aufheb-Skripts 2811; die Meldung nimmt den Item-Namen aus der Variable). Option `--ground-charms P` macht jeden Ball mit P % Chance zu einem zufaelligen Charm (`--seed N` fuer Reproduzierbarkeit). Reine Datenaenderung.
+- Hinweis: Das Skript-Archiv hat Offset-Liste (u32), Skripte beginnen bei 4*i+4+Offset; das Kennzeichen 0xFD13 steht bei normalen Skriptdateien nach der Liste.
 - [ ] Item-Datentabelle (Berries → Charms: Name, Beschreibung, Preis, Icon)
 - [ ] Code-Hooks (brauchen die genauen Adressen aus dem Report der eigenen ROM)
 

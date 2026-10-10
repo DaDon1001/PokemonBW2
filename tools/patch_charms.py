@@ -7,6 +7,9 @@ Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-item
   --test-items A,B,C,D: Test-Variante. Statt der Beeren (179-182) werden vier andere Item-IDs
       (1-255) als Charms benutzt, z. B. 17,18,19,20 (Tranke). Reihenfolge: Shiny, IV, Legendary,
       Static. Nur zum Ausprobieren ohne Cheat.
+  --ground-charms P: Jeder Ball auf dem Boden (213 Stueck, Skriptdatei a/0/5/6 Nr. 1241) wird mit P Prozent
+      Chance zu einem zufaelligen Charm (Meldung "... gefunden" passt automatisch). --seed N legt den
+      Zufall fest (sonst wird er zufaellig gewaehlt und angezeigt).
   --quiet-dialog: Ersetzt jeden gesprochenen Text (Dialoge mit "Warte auf Taste"-Steuercode) durch
       einen einzelnen Punkt. Alles geht schneller; Menues, Itemnamen und Kampftexte bleiben.
 Die Original-ROM wird nur gelesen. Geaendert werden:
@@ -34,6 +37,7 @@ DESC_ENTRY = 63
 PREFIX_END = 0x00FF  # Eintrag 481: Steuercode-Vorspann endet mit diesem Zeichen
 
 import hashlib  # noqa: E402
+import random  # noqa: E402
 
 import charm_code as CC  # noqa: E402
 
@@ -257,6 +261,10 @@ def find_text_narc(rom):
 WAIT_TAG = [0xF000, 0xBE01, 0x0000]  # "Warte auf Taste" (Seitenwechsel im Dialog)
 QUIET_WORDS = [ord("."), 0xF000, 0xBE01, 0x0000, 0xFFFF]
 DIALOG_NARCS = ("a/0/0/2", "a/0/0/3")
+GROUND_NARC = "a/0/5/6"
+GROUND_ENTRY = 1241  # Skriptdatei mit den Ball-Skripten (je 30 Bytes, gleicher Aufbau)
+GROUND_SCRIPT_LEN = 30
+CHARM_ITEMS = (179, 180, 181, 182)
 QUIET = False
 
 
@@ -287,6 +295,38 @@ def quiet_entries(entries):
     return out, total
 
 
+def ground_scripts(data):
+    """Prueft die Ball-Skript-Datei und gibt die Startpositionen der Skripte zurueck."""
+    if (len(data) - 2) % (4 + GROUND_SCRIPT_LEN):
+        sys.exit("Ball-Skript-Datei hat eine unerwartete Groesse. Diese ROM-Version wird nicht unterstuetzt.")
+    n = (len(data) - 2) // (4 + GROUND_SCRIPT_LEN)
+    starts = []
+    for i in range(n):
+        off = u32(data, 4 * i)
+        st = 4 * i + 4 + off
+        sc = data[st:st + GROUND_SCRIPT_LEN]
+        ok = (len(sc) == GROUND_SCRIPT_LEN and sc[0:2] == b"\x2e\x00" and sc[2:6] == b"\x2a\x00\x00\x80"
+              and sc[8:12] == b"\x2a\x00\x01\x80" and sc[14:18] == b"\x2a\x00\x02\x80"
+              and u16(sc, 12) == 1 and u16(sc, 22) == 2811)
+        if not ok:
+            sys.exit(f"Ball-Skript {i} hat einen unerwarteten Aufbau. Diese ROM-Version wird nicht unterstuetzt.")
+        starts.append(st)
+    return starts
+
+
+def patch_ground(entry, percent, seed):
+    """Macht jeden Ball mit 'percent' Prozent Chance zu einem zufaelligen Charm. Gibt (Daten, Liste) zurueck."""
+    rng = random.Random(seed)
+    data = bytearray(entry)
+    changed = []
+    for i, st in enumerate(ground_scripts(entry)):
+        if rng.random() * 100 < percent:
+            new = rng.choice(CHARM_ITEMS)
+            changed.append((i, u16(entry, st + 6), new))
+            struct.pack_into("<H", data, st + 6, new)
+    return bytes(data), changed
+
+
 def expected_text(rom, quiet):
     """Gibt {Pfad: (fid, Original-Eintraege, erwartete neue Eintraege, BTNF, Anzahl ersetzter Zeilen)}."""
     res = {}
@@ -310,7 +350,7 @@ def charm_patch(baseline):
     return out
 
 
-def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False):
+def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False, ground=None):
     texts = expected_text(rom, quiet)
     fid, entries, baseline, btnf, _ = texts[TEXT_NARC]
     new_entries = charm_patch(baseline)
@@ -318,6 +358,14 @@ def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False):
     if quiet:
         f3, _, n3, b3, _ = texts["a/0/0/3"]
         blobs.append(("text", f3, build_narc(n3, b3)))
+    if ground:
+        gf, gs, ge = find_narc(rom, GROUND_NARC)
+        gentries = read_narc(rom, gs, ge)
+        new_g, changed = patch_ground(gentries[GROUND_ENTRY], *ground)
+        gnew = list(gentries)
+        gnew[GROUND_ENTRY] = new_g
+        texts["ground"] = (gf, gentries, gnew, parse_narc_blocks(rom, gs), changed)
+        blobs.append(("text", gf, build_narc(gnew, texts["ground"][3])))
     ov_new = patch_overlay(rom)
     a9_new = patch_arm9(rom, item_ids)
 
@@ -374,11 +422,20 @@ def verify(old_rom, new_rom, texts, item_ids, quiet=False):
         assert g == n, f"Eintrag {i} nach dem Schreiben anders"
         if i not in changed:
             assert g == b0, f"Eintrag {i} ungewollt veraendert"
+    if "ground" in texts:
+        gf, gold, gnew, _, changed = texts["ground"]
+        gs, ge = struct.unpack_from("<II", new_rom, u32(new_rom, 0x48) + gf * 8)
+        got_g = read_narc(new_rom, gs, ge)
+        assert got_g == gnew, "Ball-Skripte nach dem Schreiben anders"
+        assert [i for i, (a, b) in enumerate(zip(gold, gnew)) if a != b] in ([], [GROUND_ENTRY]), \
+            "Ausser Datei 1241 wurde etwas veraendert"
+        for i, old_item, new_item in changed:
+            assert new_item in CHARM_ITEMS
     if quiet:
         f3, s3, e3 = find_narc(new_rom, "a/0/0/3")
         got3 = read_narc(new_rom, s3, e3)
         assert got3 == texts["a/0/0/3"][2], "Dialog-Archiv a/0/0/3 stimmt nicht"
-        assert sum(t[4] for t in texts.values()) > 0, "Keine Dialogzeilen gefunden"
+        assert sum(t[4] for k, t in texts.items() if k != "ground") > 0, "Keine Dialogzeilen gefunden"
     assert u16(new_rom, 0x15E) == crc16(new_rom[:0x15E]), "Header-CRC falsch"
     # Overlay 36: nur die Einhaengestellen duerfen abweichen
     _, _, ov_old = read_overlay(old_rom, OV_ID)
@@ -405,12 +462,12 @@ def verify(old_rom, new_rom, texts, item_ids, quiet=False):
     assert u32(new_rom, 0x2C) == len(a9_new), "ARM9-Groesse im Kopf falsch"
 
 
-def main(src, dst, item_ids=DEFAULT_ITEMS, quiet=False):
+def main(src, dst, item_ids=DEFAULT_ITEMS, quiet=False, ground=None):
     if os.path.abspath(src) == os.path.abspath(dst):
         sys.exit("Ziel darf nicht die Original-ROM sein.")
     with open(src, "rb") as f:
         rom = f.read()
-    new_rom, old_entries, new_entries, texts = patch_rom(rom, item_ids, quiet)
+    new_rom, old_entries, new_entries, texts = patch_rom(rom, item_ids, quiet, ground)
     verify(rom, new_rom, texts, item_ids, quiet)
     with open(dst, "xb") as f:
         f.write(new_rom)
@@ -421,8 +478,11 @@ def main(src, dst, item_ids=DEFAULT_ITEMS, quiet=False):
     print("Wirkung: beim naechsten wilden Pokemon wird je 1 Charm aus dem Beutel verbraucht.")
     print(f"Finden: wilde Pokemon tragen mit Chance 1 zu {FIND_RATE} einen zufaelligen Charm.")
     if quiet:
-        n = sum(t[4] for t in texts.values())
+        n = sum(t[4] for k, t in texts.items() if k != "ground")
         print(f"Dialoge: {n} gesprochene Textzeilen durch '.' ersetzt.")
+    if ground:
+        ch = texts["ground"][4]
+        print(f"Boden-Charms: {len(ch)} von 213 Baellen sind jetzt Charms ({ground[0]} %, Zufall-Startwert {ground[1]}).")
 
 
 if __name__ == "__main__":
@@ -437,6 +497,25 @@ if __name__ == "__main__":
         if len(items) != 4 or not all(1 <= x <= 255 for x in items) or len(set(items)) != 4:
             sys.exit("--test-items: genau vier verschiedene IDs zwischen 1 und 255, z. B. 17,18,19,20")
         del args[k:k + 2]
+    ground = None
+    if "--ground-charms" in args:
+        k = args.index("--ground-charms")
+        try:
+            pct = float(args[k + 1])
+        except (IndexError, ValueError):
+            sys.exit(__doc__)
+        if not 0 < pct <= 100:
+            sys.exit("--ground-charms: Prozent zwischen 1 und 100 (z. B. 20).")
+        del args[k:k + 2]
+        seed = random.SystemRandom().randrange(1, 10**6)
+        if "--seed" in args:
+            k = args.index("--seed")
+            try:
+                seed = int(args[k + 1])
+            except (IndexError, ValueError):
+                sys.exit(__doc__)
+            del args[k:k + 2]
+        ground = (pct, seed)
     quiet = "--quiet-dialog" in args
     if quiet:
         args.remove("--quiet-dialog")
@@ -452,4 +531,4 @@ if __name__ == "__main__":
     if len(args) != 2:
         sys.exit(__doc__)
     ITEM_IDS = items
-    main(args[0], args[1], items, quiet)
+    main(args[0], args[1], items, quiet, ground)
