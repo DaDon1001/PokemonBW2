@@ -7,12 +7,14 @@ Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-item
   --test-items A,B,C,D: Test-Variante. Statt der Beeren (179-182) werden vier andere Item-IDs
       (1-255) als Charms benutzt, z. B. 17,18,19,20 (Tranke). Reihenfolge: Shiny, IV, Legendary,
       Static. Nur zum Ausprobieren ohne Cheat.
-  --ground-charms P: Jeder Ball auf dem Boden (213 Stueck, Skriptdatei a/0/5/6 Nr. 1241) wird mit P Prozent
-      Chance zu einem zufaelligen Charm (Meldung "... gefunden" passt automatisch). --seed N legt den
-      Zufall fest (sonst wird er zufaellig gewaehlt und angezeigt).
+  --ground-charms P: Jeder sichtbare Ball auf dem Boden (400 Stueck, Skriptdatei a/0/5/6 Nr. 1240) wird mit
+      P Prozent Chance zu einem zufaelligen Charm (TMs/HMs bleiben). Die Meldung passt automatisch.
+  --hidden-charms P: Dasselbe fuer versteckte Items (213 Stueck, Nr. 1241).
+  --seed N legt den Zufall fest (sonst wird er zufaellig gewaehlt und angezeigt).
   --random-wild: Alle wilden Begegnungen (a/1/2/7) werden zufaellig umbesetzt: jede vorkommende Art wird
       einer anderen zufaelligen Art zugeordnet, Level und Raten bleiben.
-  --random-starters: Die drei Starter (Overlay 316) werden zufaellige Arten.
+  --random-starters: Die drei Starter werden zufaellige Arten (Skript 854 + Schrei-Tabelle Overlay 316).
+      Das Auswahlbild zeigt weiter die Original-Pokemon! Fuer saubere Starter besser den ZX-Randomizer nehmen.
   --allow-legendary: Beim Zufall (Wild/Starter) auch legendaere/mythische Pokemon zulassen (sonst nicht).
   --quiet-dialog: Ersetzt jeden gesprochenen Text (Dialoge mit "Warte auf Taste"-Steuercode) durch
       einen einzelnen Punkt. Alles geht schneller; Menues, Itemnamen und Kampftexte bleiben.
@@ -268,8 +270,13 @@ QUIET_WORDS = [ord("."), 0xF000, 0xBE01, 0x0000, 0xFFFF]
 DIALOG_NARCS = ("a/0/0/2", "a/0/0/3")
 WILD_NARC = "a/1/2/7"
 GROUND_NARC = "a/0/5/6"
-GROUND_ENTRY = 1241  # Skriptdatei mit den Ball-Skripten (je 30 Bytes, gleicher Aufbau)
-GROUND_SCRIPT_LEN = 30
+BALL_ENTRY = 1240    # sichtbare Baelle auf dem Boden (401 Skripte zu je 26 Bytes)
+HIDDEN_ENTRY = 1241  # versteckte Items (213 Skripte zu je 30 Bytes)
+HIDDEN_SCRIPT_LEN = 30
+BALL_SCRIPT_LEN = 26
+TM_RANGE = range(328, 428)  # TMs/HMs: werden standardmaessig nicht ersetzt
+STARTER_SCRIPT = 854
+STARTER_OFFSETS = ((0x58B, 0x590, 0x595), (0x5C0, 0x5C5, 0x5CA), (0x5E2, 0x5E7, 0x5EC))
 CHARM_ITEMS = (179, 180, 181, 182)
 QUIET = False
 
@@ -315,36 +322,86 @@ def patch_starters(rom, picks):
     return bytes(ov)
 
 
-def ground_scripts(data):
-    """Prueft die Ball-Skript-Datei und gibt die Startpositionen der Skripte zurueck."""
-    if (len(data) - 2) % (4 + GROUND_SCRIPT_LEN):
-        sys.exit("Ball-Skript-Datei hat eine unerwartete Groesse. Diese ROM-Version wird nicht unterstuetzt.")
-    n = (len(data) - 2) // (4 + GROUND_SCRIPT_LEN)
-    starts = []
+def hidden_positions(data):
+    """Prueft die Datei der versteckten Items und gibt die Positionen der Item-Nummern zurueck."""
+    if (len(data) - 2) % (4 + HIDDEN_SCRIPT_LEN):
+        sys.exit("Skriptdatei der versteckten Items hat eine unerwartete Groesse. ROM-Version nicht unterstuetzt.")
+    n = (len(data) - 2) // (4 + HIDDEN_SCRIPT_LEN)
+    pos = []
     for i in range(n):
-        off = u32(data, 4 * i)
-        st = 4 * i + 4 + off
-        sc = data[st:st + GROUND_SCRIPT_LEN]
-        ok = (len(sc) == GROUND_SCRIPT_LEN and sc[0:2] == b"\x2e\x00" and sc[2:6] == b"\x2a\x00\x00\x80"
+        st = 4 * i + 4 + u32(data, 4 * i)
+        sc = data[st:st + HIDDEN_SCRIPT_LEN]
+        ok = (len(sc) == HIDDEN_SCRIPT_LEN and sc[0:2] == b"\x2e\x00" and sc[2:6] == b"\x2a\x00\x00\x80"
               and sc[8:12] == b"\x2a\x00\x01\x80" and sc[14:18] == b"\x2a\x00\x02\x80"
               and u16(sc, 12) == 1 and u16(sc, 22) == 2811)
         if not ok:
-            sys.exit(f"Ball-Skript {i} hat einen unerwarteten Aufbau. Diese ROM-Version wird nicht unterstuetzt.")
-        starts.append(st)
-    return starts
+            sys.exit(f"Skript {i} der versteckten Items hat einen unerwarteten Aufbau. ROM-Version nicht unterstuetzt.")
+        pos.append(st + 6)
+    return pos
 
 
-def patch_ground(entry, percent, seed):
-    """Macht jeden Ball mit 'percent' Prozent Chance zu einem zufaelligen Charm. Gibt (Daten, Liste) zurueck."""
-    rng = random.Random(seed)
+def ball_positions(data):
+    """Prueft die Ball-Skriptdatei (ein Skript mit anderem Aufbau am Ende ist erlaubt)."""
+    m = next((p for p in range(0, len(data) - 1, 4) if u16(data, p) == 0xFD13), None)
+    if m is None:
+        sys.exit("Ball-Skriptdatei hat kein Kennzeichen. Diese ROM-Version wird nicht unterstuetzt.")
+    n = m // 4
+    pos, bad = [], 0
+    for i in range(n):
+        st = 4 * i + 4 + u32(data, 4 * i)
+        sc = data[st:st + BALL_SCRIPT_LEN]
+        ok = (len(sc) == BALL_SCRIPT_LEN and sc[0:2] == b"\x2e\x00" and sc[2:6] == b"\x28\x00\x0c\x80"
+              and sc[8:12] == b"\x28\x00\x0d\x80" and sc[14:16] == b"\x04\x00")
+        if ok:
+            pos.append(st + 6)
+        else:
+            bad += 1
+    if bad > 1 or len(pos) < 300:
+        sys.exit("Ball-Skripte haben einen unerwarteten Aufbau. Diese ROM-Version wird nicht unterstuetzt.")
+    return pos
+
+
+def convert_items(entry, positions, percent, rng):
+    """Macht jeden Fund mit 'percent' Prozent Chance zu einem zufaelligen Charm (TMs/HMs bleiben)."""
     data = bytearray(entry)
     changed = []
-    for i, st in enumerate(ground_scripts(entry)):
+    for i, p in enumerate(positions):
+        old = u16(entry, p)
+        if old in TM_RANGE:
+            continue
         if rng.random() * 100 < percent:
             new = rng.choice(CHARM_ITEMS)
-            changed.append((i, u16(entry, st + 6), new))
-            struct.pack_into("<H", data, st + 6, new)
+            changed.append((i, old, new))
+            struct.pack_into("<H", data, p, new)
     return bytes(data), changed
+
+
+def patch_starter_script(entry, picks):
+    """Setzt die drei Starter im Skript 854 (je dreimal pro Starter)."""
+    data = bytearray(entry)
+    for offs, orig, new in zip(STARTER_OFFSETS, R.STARTER_ORIGINAL[:3], picks):
+        for o in offs:
+            if u16(entry, o) != orig:
+                sys.exit("Starter-Skript passt nicht zum erwarteten Original. ROM-Version nicht unterstuetzt.")
+            struct.pack_into("<H", data, o, new)
+    return bytes(data)
+
+
+def patch_scripts(rom, ground, picks, seed):
+    """Aendert im Skript-Archiv: Baelle, versteckte Items, Starter. Gibt (fid, alt, neu, BTNF, Info) zurueck."""
+    fid, s, e = find_narc(rom, GROUND_NARC)
+    old = read_narc(rom, s, e)
+    new = list(old)
+    info = {"balls": [], "hidden": [], "starters": picks}
+    if ground and ground.get("balls"):
+        new[BALL_ENTRY], info["balls"] = convert_items(old[BALL_ENTRY], ball_positions(old[BALL_ENTRY]),
+                                                       ground["balls"], random.Random(seed * 7 + 3))
+    if ground and ground.get("hidden"):
+        new[HIDDEN_ENTRY], info["hidden"] = convert_items(old[HIDDEN_ENTRY], hidden_positions(old[HIDDEN_ENTRY]),
+                                                          ground["hidden"], random.Random(seed * 7 + 4))
+    if picks:
+        new[STARTER_SCRIPT] = patch_starter_script(old[STARTER_SCRIPT], picks)
+    return fid, old, new, parse_narc_blocks(rom, s), info
 
 
 def expected_text(rom, quiet):
@@ -378,14 +435,6 @@ def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False, ground=None, rand=None):
     if quiet:
         f3, _, n3, b3, _ = texts["a/0/0/3"]
         blobs.append(("text", f3, build_narc(n3, b3)))
-    if ground:
-        gf, gs, ge = find_narc(rom, GROUND_NARC)
-        gentries = read_narc(rom, gs, ge)
-        new_g, changed = patch_ground(gentries[GROUND_ENTRY], *ground)
-        gnew = list(gentries)
-        gnew[GROUND_ENTRY] = new_g
-        texts["ground"] = (gf, gentries, gnew, parse_narc_blocks(rom, gs), changed)
-        blobs.append(("text", gf, build_narc(gnew, texts["ground"][3])))
     extra_ovs = []
     if rand and rand["wild"]:
         wf, ws, we = find_narc(rom, WILD_NARC)
@@ -396,11 +445,16 @@ def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False, ground=None, rand=None):
         wnew = R.randomize_wild(wentries, mapping)
         texts["wild"] = (wf, wentries, wnew, parse_narc_blocks(rom, ws), mapping)
         blobs.append(("text", wf, build_narc(wnew, texts["wild"][3])))
+    picks = None
     if rand and rand["starters"]:
         rng = random.Random(rand["seed"] * 7 + 2)
         picks = R.pick_starters(R.species_pool(rand["legendary"]), rng)
         texts["starters"] = picks
         extra_ovs.append(("ov", R.STARTER_OV_ID, patch_starters(rom, picks)))
+    if ground or picks:
+        sf, sold, snew, sbtnf, sinfo = patch_scripts(rom, ground, picks, (ground or rand or {"seed": 1})["seed"])
+        texts["scripts"] = (sf, sold, snew, sbtnf, sinfo)
+        blobs.append(("text", sf, build_narc(snew, sbtnf)))
     ov_new = patch_overlay(rom)
     a9_new = patch_arm9(rom, item_ids)
 
@@ -469,15 +523,21 @@ def verify(old_rom, new_rom, texts, item_ids, quiet=False):
         assert struct.unpack_from("<3H", sov_new, off) == tuple(texts["starters"]), "Starter falsch"
         for lo, hi in diff_ranges(sov_old, sov_new):
             assert off <= lo and hi <= off + 6, "Overlay 316 ausserhalb der Tabelle veraendert"
-    if "ground" in texts:
-        gf, gold, gnew, _, changed = texts["ground"]
-        gs, ge = struct.unpack_from("<II", new_rom, u32(new_rom, 0x48) + gf * 8)
-        got_g = read_narc(new_rom, gs, ge)
-        assert got_g == gnew, "Ball-Skripte nach dem Schreiben anders"
-        assert [i for i, (a, b) in enumerate(zip(gold, gnew)) if a != b] in ([], [GROUND_ENTRY]), \
-            "Ausser Datei 1241 wurde etwas veraendert"
-        for i, old_item, new_item in changed:
-            assert new_item in CHARM_ITEMS
+    if "scripts" in texts:
+        sf, sold, snew, _, sinfo = texts["scripts"]
+        ss, se = struct.unpack_from("<II", new_rom, u32(new_rom, 0x48) + sf * 8)
+        got_s = read_narc(new_rom, ss, se)
+        assert got_s == snew, "Skripte nach dem Schreiben anders"
+        allowed = {BALL_ENTRY, HIDDEN_ENTRY, STARTER_SCRIPT}
+        diff_idx = {i for i, (a, b) in enumerate(zip(sold, snew)) if a != b}
+        assert diff_idx <= allowed, "Unerlaubte Skriptdatei veraendert"
+        for lst in (sinfo["balls"], sinfo["hidden"]):
+            for _, old_item, new_item in lst:
+                assert new_item in CHARM_ITEMS and old_item not in TM_RANGE
+        if sinfo["starters"]:
+            for offs, new in zip(STARTER_OFFSETS, sinfo["starters"]):
+                for o in offs:
+                    assert u16(got_s[STARTER_SCRIPT], o) == new, "Starter im Skript falsch"
     if quiet:
         f3, s3, e3 = find_narc(new_rom, "a/0/0/3")
         got3 = read_narc(new_rom, s3, e3)
@@ -532,9 +592,13 @@ def main(src, dst, item_ids=DEFAULT_ITEMS, quiet=False, ground=None, rand=None):
     if rand and rand["starters"]:
         print("Starter (Pokedex-Nummern): " + ", ".join(str(x) for x in texts["starters"]))
     if ground:
-        ch = texts["ground"][4]
-        print(f"Boden-Charms: {len(ch)} von 213 Baellen sind jetzt Charms ({ground[0]} %, Zufall-Startwert {ground[1]}).")
-
+        info = texts["scripts"][4]
+        if ground.get("balls"):
+            print(f"Baelle auf dem Boden: {len(info['balls'])} von 400 sind jetzt Charms "
+                  f"({ground['balls']} %, Zufall-Startwert {ground['seed']}).")
+        if ground.get("hidden"):
+            print(f"Versteckte Items: {len(info['hidden'])} von 213 sind jetzt Charms "
+                  f"({ground['hidden']} %, Zufall-Startwert {ground['seed']}).")
 
 if __name__ == "__main__":
     args = sys.argv[1:]
@@ -557,16 +621,18 @@ if __name__ == "__main__":
             sys.exit(__doc__)
         del args[k:k + 2]
     ground = None
-    if "--ground-charms" in args:
-        k = args.index("--ground-charms")
-        try:
-            pct = float(args[k + 1])
-        except (IndexError, ValueError):
-            sys.exit(__doc__)
-        if not 0 < pct <= 100:
-            sys.exit("--ground-charms: Prozent zwischen 1 und 100 (z. B. 20).")
-        del args[k:k + 2]
-        ground = (pct, seed)
+    for flag, key in (("--ground-charms", "balls"), ("--hidden-charms", "hidden")):
+        if flag in args:
+            k = args.index(flag)
+            try:
+                pct = float(args[k + 1])
+            except (IndexError, ValueError):
+                sys.exit(__doc__)
+            if not 0 < pct <= 100:
+                sys.exit(f"{flag}: Prozent zwischen 1 und 100 (z. B. 20).")
+            del args[k:k + 2]
+            ground = ground or {"seed": seed}
+            ground[key] = pct
     rand = {"wild": "--random-wild" in args, "starters": "--random-starters" in args,
             "legendary": "--allow-legendary" in args, "seed": seed}
     for flag in ("--random-wild", "--random-starters", "--allow-legendary"):

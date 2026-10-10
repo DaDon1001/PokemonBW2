@@ -2,7 +2,8 @@
 """Baut eine kuenstliche Test-ROM aus den extrahierten Code-Dateien (code.zip-Inhalt) und
 synthetischen Daten (Texte, Ball-Skripte, Begegnungen). Nur fuer Entwicklungstests.
 
-Aufruf: python tools/dev/make_test_rom.py <code-ordner> <ausgabe.nds>
+Aufruf: python tools/dev/make_test_rom.py <code-ordner> <ausgabe.nds> [<daten-ordner>]
+Mit <daten-ordner> (entpackte daten.zip mit a/0/5/6 und a/1/2/7) werden diese echten Daten verwendet.
 """
 import os
 import struct
@@ -46,13 +47,18 @@ def wild_entry(seed, blocks):
     return out
 
 
-def main(code_dir, out_path):
+def main(code_dir, out_path, data_dir=None):
     btnf = b"BTNF" + struct.pack("<I", 16) + struct.pack("<IHH", 4, 0, 1)
     ents2 = [mk([f"Item{k}-{i}" + ("\x01\x02\x03" if (k + i) % 7 == 0 else "") for i in range(200)],
                 prefix=(k == 481)) for k in range(483)]
     ents3 = [mk([f"Dialog{k}-{i}" + ("\x01\x02\x03" if i % 2 == 0 else "") for i in range(30)]) for k in range(40)]
     ents5 = [b"\x13\xfd\x00\x00"] * 1241 + [balls()] + [b"\x13\xfd\x00\x00"] * 3
     ents7 = [wild_entry(k, 4 if k % 11 == 0 else 1) for k in range(20)]
+    if data_dir:
+        def real(path, n):
+            return [open(os.path.join(data_dir, path, f"entry_{i:04d}.bin"), "rb").read() for i in range(n)]
+        ents5 = real("a/0/5/6", 1289)
+        ents7 = real("a/1/2/7", 135)
     files = [build_narc(e, btnf) for e in (ents2, ents3, ents5, ents7)]  # file ids 0..3
 
     def d(sub, first, parent):
@@ -107,4 +113,4 @@ def main(code_dir, out_path):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
