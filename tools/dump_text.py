@@ -2,8 +2,9 @@
 """Zeigt einige Zeilen der Item-Text-Archive (a/0/0/2, Eintraege 63/64/481/482).
 
 Aufruf:  python tools/dump_text.py rom.nds > text.txt
-Probiert zwei Text-Schluessel und zeigt Zeilen 0-3, 149-152 und 179-182 je Eintrag.
-Die Zeilentabelle liegt bei dieser ROM im Klartext (aus der Diagnose abgelesen).
+Zeigt Zeilen 0-1, 17, 149-152 und 179-182 je Eintrag, vollstaendig und mit Steuercodes.
+Die Zeilentabelle liegt bei dieser ROM im Klartext, der Zeilenschluessel ist
+0x7C89 + 0x2983 * Zeilennummer (aus den Daten abgeleitet).
 """
 import os
 import struct
@@ -15,8 +16,7 @@ from inspect_nds import parse_fnt, u16, u32  # noqa: E402
 
 TEXT_NARC = "a/0/0/2"
 ENTRIES = (63, 64, 481, 482)
-KEY_BASES = (0x7C89, 0x2983)
-SHOW = (0, 1, 2, 3, 149, 150, 151, 152, 179, 180, 181, 182)
+SHOW = (0, 1, 17, 149, 150, 151, 152, 179, 180, 181, 182)
 
 
 def rol3(k):
@@ -32,10 +32,10 @@ def to_str(chars):
     return "".join(s)
 
 
-def decode_line(data, base, i, key_base):
+def decode_line(data, base, i):
     off, ln = struct.unpack_from("<IH", data, base + 4 + i * 8)
     raw = data[base + off:base + off + ln * 2]
-    key = (key_base * (i + 1)) & 0xFFFF
+    key = (0x7C89 + 0x2983 * i) & 0xFFFF
     chars = []
     for j in range(0, len(raw) - 1, 2):
         chars.append((raw[j] | raw[j + 1] << 8) ^ key)
@@ -54,11 +54,9 @@ def main(path):
         data = entries[idx]
         nlines, base = u16(data, 2), u32(data, 0x0C)
         print(f"\n== Eintrag {idx}: {nlines} Zeilen, Block bei {base:#x}")
-        for kb in KEY_BASES:
-            print(f"-- Schluessel {kb:#x}")
-            for n in SHOW:
-                if n < nlines:
-                    print(f"{n:3d}: {decode_line(data, base, n, kb)[:80]}")
+        for n in SHOW:
+            if n < nlines:
+                print(f"{n:3d}: {decode_line(data, base, n)[:400]}")
 
 
 if __name__ == "__main__":
