@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Charm-Mod: benennt vier Beeren um und gibt dem Shiny Charm seine Wirkung. Schreibt eine NEUE ROM.
+"""Charm-Mod fuer Pokemon Schwarz 2: vier Beeren werden zu Charms. Schreibt eine NEUE ROM.
 
-Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-item N]
-  --test-item N: Test-Variante. Der Effekt haengt dann am Item mit der ID N (z. B. 17 = Trank,
-                 4 = Pokeball) statt am Shiny Charm (179). Nur zum Ausprobieren ohne Cheat.
+Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-items A,B,C,D]
+  --test-items A,B,C,D: Test-Variante. Statt der Beeren (179-182) werden vier andere Item-IDs
+      (1-255) als Charms benutzt, z. B. 17,18,19,20 (Tranke). Reihenfolge: Shiny, IV, Legendary,
+      Static. Nur zum Ausprobieren ohne Cheat.
 Die Original-ROM wird nur gelesen. Geaendert werden:
-  1. Das Text-Archiv a/0/0/2 (Eintraege 63, 64, 481, 482; Zeilen 179-182): Namen/Beschreibungen.
-  2. Das Overlay 36 (Kampf): Shiny Charm (Item 179). Beim naechsten wilden Pokemon wird ein
-     Charm aus dem Beutel verbraucht und das Pokemon ist (fast sicher) shiny.
-Die anderen drei Charms haben noch keine Wirkung.
+  1. Text-Archiv a/0/0/2 (Eintraege 63, 64, 481, 482; Zeilen 179-182): Namen/Beschreibungen.
+  2. Overlay 36 (Kampf): drei Einhaengestellen in der Funktion, die wilde Pokemon erzeugt.
+  3. ARM9 (wird dafuer entpackt gespeichert): Zusatzfunktionen in einem ungenutzten Block.
+Wirkung: Beim naechsten wilden Pokemon wird je 1 Charm aus dem Beutel verbraucht:
+  Shiny Charm (179)    -> das Pokemon ist (fast sicher) shiny
+  100% IV Charm (180)  -> alle IVs 31
+  Legendary Charm (181)-> zufaelliges legendaeres Pokemon (Level wie die Begegnung)
+  Static Charm (182)   -> zufaelliges Pokemon mit 600+ Basiswerten (Level wie die Begegnung)
 """
 import os
 import struct
@@ -23,15 +28,17 @@ NAME_ENTRIES = (64, 481, 482)
 DESC_ENTRY = 63
 PREFIX_END = 0x00FF  # Eintrag 481: Steuercode-Vorspann endet mit diesem Zeichen
 
-# --- Shiny-Charm-Patch in Overlay 36 (Funktion, die wilde Pokemon fuer den Kampf erzeugt) ---
+import hashlib  # noqa: E402
+
+import charm_code as CC  # noqa: E402
+
 OV_ID = 36
-OV_PATCH_ADDR = 0x021A0DD6
-# Original: Beutel holen, Item 0x278 (Schluesselitem Shiny Charm) pruefen, Wuerfelzahl 1 bzw. 3
-OV_ORIGINAL = bytes.fromhex("2868012676f6bbfa9e2189000122042367f645fb002800d0b61c301c")
-# Neu: Beutel holen, 1x Item 179 entfernen; war es da, Wuerfelzahl 130560 statt 1
-OV_NEW = bytes.fromhex("286876f6bcfab3210122042367f623fb0126002801d0ff267602301c")
 OV_RAM_ADDR = 0x0217F600
 OV_RAM_SIZE = 0x561A0
+ARM9_BASE = 0x02004000
+DEFAULT_ITEMS = (179, 180, 181, 182)  # Shiny, IV, Legendary, Static
+ITEM_IDS = DEFAULT_ITEMS
+NITRO_MAGIC = b"\x21\x06\xc0\xde"  # Modulparameter-Kennung im ARM9
 
 CHARMS = {  # Zeile: (Name, Beschreibung)
     179: ("Shiny Charm",
@@ -167,22 +174,59 @@ def read_overlay(rom, ov_id):
     return ov_off, fid, blz_decompress(rom[s:e])
 
 
-ITEM_ID = 179  # Item-ID, an der der Shiny-Effekt haengt (Shiny Charm)
-
-
-def patch_overlay(rom, item_id=179):
+def patch_overlay(rom):
     """Gibt das gepatchte, unkomprimierte Overlay 36 zurueck (oder bricht ab, wenn es nicht passt)."""
     ov_off, fid, ov = read_overlay(rom, OV_ID)
     if u32(rom, ov_off + 4) != OV_RAM_ADDR or len(ov) != OV_RAM_SIZE:
         sys.exit("Overlay 36 hat nicht die erwartete Groesse/Adresse. Diese ROM-Version passt nicht.")
-    off = OV_PATCH_ADDR - OV_RAM_ADDR
-    if ov[off:off + len(OV_ORIGINAL)] != OV_ORIGINAL:
-        sys.exit("Die Code-Stelle im Overlay 36 passt nicht zum erwarteten Original. "
+    ov = bytearray(ov)
+    for addr, orig, new in CC.OV_SITES:
+        off = addr - OV_RAM_ADDR
+        if bytes(ov[off:off + len(orig)]) != orig:
+            sys.exit("Eine Code-Stelle im Overlay 36 passt nicht zum erwarteten Original. "
+                     "Diese ROM-Version (oder schon gepatcht?) wird nicht unterstuetzt. Nichts geschrieben.")
+        ov[off:off + len(new)] = new
+    return bytes(ov)
+
+
+def cave_blob(item_ids):
+    """Zusatzcode mit den gewuenschten Item-IDs (Standard 179-182)."""
+    blob = bytearray(CC.CAVE_BLOB)
+    for off, default, new in zip(CC.ITEM_ID_OFFSETS, DEFAULT_ITEMS, item_ids):
+        assert blob[off] == default and blob[off + 1] == 0x21, "Zusatzcode unerwartet aufgebaut"
+        blob[off] = new
+    return bytes(blob)
+
+
+def module_params_offset(a9):
+    idx = a9.find(NITRO_MAGIC)
+    if idx < 0x1C:
+        sys.exit("ARM9-Modulparameter nicht gefunden. Diese ROM-Version passt nicht.")
+    return idx - 0x1C
+
+
+def read_arm9(rom):
+    """ARM9 aus der ROM; ist er komprimiert (Feld compressed_static_end != 0), wird er entpackt."""
+    off, size = u32(rom, 0x20), u32(rom, 0x2C)
+    raw = bytes(rom[off:off + size])
+    mp = raw[:0x4000].find(NITRO_MAGIC)  # die ersten 0x4000 Bytes sind nie komprimiert
+    if mp >= 0x1C and u32(raw, mp - 0x1C + 0x14) == 0:
+        return raw
+    return blz_decompress(raw)
+
+
+def patch_arm9(rom, item_ids):
+    """Gibt den entpackten, gepatchten ARM9 zurueck."""
+    a9 = bytearray(read_arm9(rom))
+    cave = CC.CAVE_ADDR - ARM9_BASE
+    n = len(CC.CAVE_BLOB)
+    if hashlib.sha1(bytes(a9[cave:cave + n])).hexdigest() != CC.CAVE_ORIG_SHA1:
+        sys.exit("Der Platz fuer den Zusatzcode im ARM9 passt nicht zum erwarteten Original. "
                  "Diese ROM-Version (oder schon gepatcht?) wird nicht unterstuetzt. Nichts geschrieben.")
-    new = bytearray(OV_NEW)
-    assert new[6] == 0xB3 and new[7] == 0x21, "Patch-Aufbau unerwartet"  # movs r1,#179
-    new[6] = item_id
-    return ov[:off] + bytes(new) + ov[off + len(new):]
+    a9[cave:cave + n] = cave_blob(item_ids)
+    cse = module_params_offset(a9) + 0x14  # "compressed_static_end": 0 = nicht komprimiert
+    struct.pack_into("<I", a9, cse, 0)
+    return bytes(a9)
 
 
 def find_text_narc(rom):
@@ -194,7 +238,7 @@ def find_text_narc(rom):
     return fid, s, e
 
 
-def patch_rom(rom):
+def patch_rom(rom, item_ids=DEFAULT_ITEMS):
     fid, s, e = find_text_narc(rom)
     entries = read_narc(rom, s, e)
     btnf = parse_narc_blocks(rom, s)
@@ -205,28 +249,52 @@ def patch_rom(rom):
         new_entries[idx] = patch_entry(entries[idx], idx, names)
     new_entries[DESC_ENTRY] = patch_entry(entries[DESC_ENTRY], DESC_ENTRY, descs)
     narc = build_narc(new_entries, btnf)
-    ov_new = patch_overlay(rom, ITEM_ID)
+    ov_new = patch_overlay(rom)
+    a9_new = patch_arm9(rom, item_ids)
 
     out = bytearray(rom)
+    ov_off = u32(rom, 0x50) + OV_ID * 32
+    fat = u32(rom, 0x48)
     pos = max(len(rom), u32(rom, 0x80))
-    for file_id, blob in ((fid, narc), (None, ov_new)):
+    for kind, blob in (("text", narc), ("ov", ov_new), ("arm9", a9_new)):
         pos += -pos % 0x200
         out += b"\0" * (pos - len(out))
         out += blob
-        if file_id is None:  # Overlay 36: unkomprimiert, FAT und Overlay-Tabelle anpassen
-            ov_off = u32(rom, 0x50) + OV_ID * 32
-            ov_fid = u32(rom, ov_off + 24)
-            struct.pack_into("<II", out, u32(rom, 0x48) + ov_fid * 8, pos, pos + len(blob))
+        if kind == "text":
+            struct.pack_into("<II", out, fat + fid * 8, pos, pos + len(blob))
+        elif kind == "ov":  # Overlay 36 unkomprimiert: FAT und Overlay-Tabelle anpassen
+            struct.pack_into("<II", out, fat + u32(rom, ov_off + 24) * 8, pos, pos + len(blob))
             struct.pack_into("<I", out, ov_off + 28, 0x02000000)
-        else:
-            struct.pack_into("<II", out, u32(rom, 0x48) + file_id * 8, pos, pos + len(blob))
+        else:  # ARM9 unkomprimiert: Kopf zeigt auf die neue Position und Groesse
+            struct.pack_into("<I", out, 0x20, pos)
+            struct.pack_into("<I", out, 0x2C, len(blob))
         pos += len(blob)
     struct.pack_into("<I", out, 0x80, pos)
+    # Secure-Area-CRC im Kopf (0x6C) nachziehen, falls sie vorher zu den ersten 0x4000 ARM9-Bytes passte
+    a9_old = read_arm9(rom)
+    if u16(rom, 0x6C) == crc16(a9_old[:0x4000]):
+        struct.pack_into("<H", out, 0x6C, crc16(a9_new[:0x4000]))
     struct.pack_into("<H", out, 0x15E, crc16(bytes(out[:0x15E])))
     return bytes(out), entries, new_entries
 
 
-def verify(new_rom, old_entries, new_entries):
+def diff_ranges(a, b):
+    """Liste der (Start, Ende) abweichender Bereiche zweier gleich langer Byte-Folgen."""
+    assert len(a) == len(b)
+    out, i = [], 0
+    while i < len(a):
+        if a[i] != b[i]:
+            j = i
+            while j < len(a) and a[j] != b[j]:
+                j += 1
+            out.append((i, j))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def verify(old_rom, new_rom, old_entries, new_entries, item_ids):
     fid, s, e = find_text_narc(new_rom)
     got = read_narc(new_rom, s, e)
     assert len(got) == len(new_entries), "Eintragszahl falsch"
@@ -236,40 +304,60 @@ def verify(new_rom, old_entries, new_entries):
         if i not in changed:
             assert g == o, f"Eintrag {i} ungewollt veraendert"
     assert u16(new_rom, 0x15E) == crc16(new_rom[:0x15E]), "Header-CRC falsch"
-    _, _, ov = read_overlay(new_rom, OV_ID)
-    off = OV_PATCH_ADDR - OV_RAM_ADDR
-    exp = bytearray(OV_NEW)
-    exp[6] = ITEM_ID
-    assert len(ov) == OV_RAM_SIZE and ov[off:off + len(exp)] == bytes(exp), "Overlay-Patch nicht korrekt"
+    # Overlay 36: nur die Einhaengestellen duerfen abweichen
+    _, _, ov_old = read_overlay(old_rom, OV_ID)
+    _, _, ov_new = read_overlay(new_rom, OV_ID)
+    assert len(ov_new) == OV_RAM_SIZE
+    sites = [(a - OV_RAM_ADDR, a - OV_RAM_ADDR + len(n)) for a, _, n in CC.OV_SITES]
+    for lo, hi in diff_ranges(ov_old, ov_new):
+        assert any(s0 <= lo and hi <= s1 for s0, s1 in sites), "Overlay ausserhalb der Stellen veraendert"
+    for a, _, n in CC.OV_SITES:
+        assert ov_new[a - OV_RAM_ADDR:a - OV_RAM_ADDR + len(n)] == n, "Overlay-Stelle falsch"
+    # ARM9: nur Zusatzcode und das Kompressions-Feld duerfen abweichen, erste 0x4000 Bytes gleich
+    a9_old, a9_new = read_arm9(old_rom), read_arm9(new_rom)
+    cave = CC.CAVE_ADDR - ARM9_BASE
+    cse = module_params_offset(a9_new) + 0x14
+    # In den ersten 0x4000 Bytes (Secure Area) darf nur das Kompressions-Feld abweichen
+    assert diff_ranges(a9_old[:0x4000], a9_new[:0x4000]) == [(cse, cse + 4)], "Secure Area veraendert"
+    if u16(old_rom, 0x6C) == crc16(a9_old[:0x4000]):
+        assert u16(new_rom, 0x6C) == crc16(a9_new[:0x4000]), "Secure-Area-CRC nicht nachgezogen"
+    allowed = [(cave, cave + len(CC.CAVE_BLOB)), (cse, cse + 4)]
+    for lo, hi in diff_ranges(a9_old, a9_new):
+        assert any(s0 <= lo and hi <= s1 for s0, s1 in allowed), "ARM9 ausserhalb der Stellen veraendert"
+    assert a9_new[cave:cave + len(CC.CAVE_BLOB)] == cave_blob(item_ids), "Zusatzcode falsch"
+    assert u32(a9_new, cse) == 0, "ARM9 noch als komprimiert markiert"
+    assert u32(new_rom, 0x2C) == len(a9_new), "ARM9-Groesse im Kopf falsch"
 
 
-def main(src, dst):
+def main(src, dst, item_ids=DEFAULT_ITEMS):
     if os.path.abspath(src) == os.path.abspath(dst):
         sys.exit("Ziel darf nicht die Original-ROM sein.")
     with open(src, "rb") as f:
         rom = f.read()
-    new_rom, old_entries, new_entries = patch_rom(rom)
-    verify(new_rom, old_entries, new_entries)
+    new_rom, old_entries, new_entries = patch_rom(rom, item_ids)
+    verify(rom, new_rom, old_entries, new_entries, item_ids)
     with open(dst, "xb") as f:
         f.write(new_rom)
     print(f"Fertig: {dst} ({len(new_rom)} Bytes). Original unveraendert.")
-    for ln, (name, _) in CHARMS.items():
-        print(f"  Zeile {ln}: {name}")
-    print(f"Shiny-Effekt haengt an Item {ITEM_ID}: wirkt beim naechsten wilden Pokemon "
-          "(Item wird verbraucht).")
+    names = ("Shiny Charm", "100% IV Charm", "Legendary Charm", "Static Charm")
+    for n, i in zip(names, item_ids):
+        print(f"  {n}: Item {i}")
+    print("Wirkung: beim naechsten wilden Pokemon wird je 1 Charm aus dem Beutel verbraucht.")
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if "--test-item" in args:
-        k = args.index("--test-item")
+    items = DEFAULT_ITEMS
+    if "--test-items" in args:
+        k = args.index("--test-items")
         try:
-            ITEM_ID = int(args[k + 1])
+            items = tuple(int(x) for x in args[k + 1].split(","))
         except (IndexError, ValueError):
             sys.exit(__doc__)
-        if not 1 <= ITEM_ID <= 255:
-            sys.exit("--test-item: ID muss zwischen 1 und 255 liegen.")
+        if len(items) != 4 or not all(1 <= x <= 255 for x in items) or len(set(items)) != 4:
+            sys.exit("--test-items: genau vier verschiedene IDs zwischen 1 und 255, z. B. 17,18,19,20")
         del args[k:k + 2]
     if len(args) != 2:
         sys.exit(__doc__)
-    main(args[0], args[1])
+    ITEM_IDS = items
+    main(args[0], args[1], items)

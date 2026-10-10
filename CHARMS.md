@@ -19,6 +19,13 @@ Gemeinsamer Mechanismus: Beim Benutzen wird im Spielstand ein "wartender Charm" 
 - [x] Texte: `a/0/0/2`, Zeilenschluessel `0x7C89 + 0x2983*Zeile`, Zeilentabelle im Klartext. Eintrag 64 = Namen, 63 = Beschreibungen, 481/482 = weitere Namensvarianten (481 mit Steuercode-Vorspann). ROM ist eine portugiesische Fassung.
 - [x] `tools/patch_charms.py`: benennt die Zeilen 179-182 um (nur Text, keine Effekte), schreibt eine neue ROM.
 - [x] **Shiny Charm getestet (melonDS): wilder Encounter shiny, Charm verbraucht.** (Erst mit --test-item 17 Trank, dann mit dem echten Item 179.)
+- [x] Alle vier Charm-Effekte gebaut (noch ungetestet ausser Shiny): `tools/patch_charms.py` + `tools/charm_code.py`.
+  - ARM9 wird entpackt gespeichert (compressed_static_end = 0, Secure-Area-CRC nachgezogen).
+  - Zusatzfunktionen (386 Bytes) in einer ungenutzten printf-Funktion bei 0x02085200.
+  - Overlay 36: Einhaengestellen bei 0x021a0dca (Art/Item), 0x021a0dd6 (Shiny-Wuerfelzahl), 0x021a0e1e (IVs).
+  - IV-Charm: IV-Parameter 0x3FFFFFFF statt 0xFFFFFFFF (5 Bit je Wert, alle 31).
+  - Legendary/Static: Art in der Begegnungsstruktur ueberschrieben (Level bleibt wie die Begegnung).
+  - Tests: `tools/dev/` (Emulator-Tests der Hilfsfunktionen mit Unicorn, Testrom-Bau).
 - [ ] Item-Datentabelle (Berries → Charms: Name, Beschreibung, Preis, Icon)
 - [ ] Code-Hooks (brauchen die genauen Adressen aus dem Report der eigenen ROM)
 
