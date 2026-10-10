@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Charm-Mod fuer Pokemon Schwarz 2: vier Beeren werden zu Charms. Schreibt eine NEUE ROM.
+"""Charm-Mod fuer Pokemon Schwarz 2: die 17 Edelsteine werden zu Charms. Schreibt eine NEUE ROM.
 
-Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-items A,B,C,D] [--find-rate N]
-  --find-rate N: Fundchance. Jedes wilde Pokemon traegt mit Chance 1 zu N einen zufaelligen Charm
-      als Item (Standard 20). Zum Testen z. B. 1 (jedes wilde Pokemon traegt einen Charm).
-  --test-items A,B,C,D: Test-Variante. Statt der Beeren (179-182) werden vier andere Item-IDs
-      (1-255) als Charms benutzt, z. B. 17,18,19,20 (Tranke). Reihenfolge: Shiny, IV, Legendary,
-      Static. Nur zum Ausprobieren ohne Cheat.
+Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [Optionen]
+Die 17 Edelsteine (Gems, Item 548-564) werden zu Charms: 8 Shiny Charms, 4 100% IV Charms, 3 Legendary
+Charms, 2 Static Charms. Jeder Edelstein liegt in den versteckten Items schon einmal in der Spielwelt.
+Optionen:
+  --find-rate N: Wilde Pokemon tragen mit Chance 1 zu N einen zufaelligen Edelstein-Charm (Standard 20).
+  --test-items A,B,C,D: Testvariante: Der Effekt haengt zusaetzlich nur an den Items A (Shiny), B (IV),
+      C (Legendary), D (Static), IDs 1-255, z. B. 17,26,25,24 (Traenke).
   --ground-charms P: Jeder sichtbare Ball auf dem Boden (400 Stueck, Skriptdatei a/0/5/6 Nr. 1240) wird mit
-      P Prozent Chance zu einem zufaelligen Charm (TMs/HMs bleiben). Die Meldung passt automatisch.
+      P Prozent Chance zu einem zufaelligen Edelstein-Charm (TMs/HMs und Edelsteine bleiben).
   --hidden-charms P: Dasselbe fuer versteckte Items (213 Stueck, Nr. 1241).
   --seed N legt den Zufall fest (sonst wird er zufaellig gewaehlt und angezeigt).
   --random-wild: Alle wilden Begegnungen (a/1/2/7) werden zufaellig umbesetzt: jede vorkommende Art wird
@@ -19,15 +20,16 @@ Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-item
   --quiet-dialog: Ersetzt jeden gesprochenen Text (Dialoge mit "Warte auf Taste"-Steuercode) durch
       einen einzelnen Punkt. Alles geht schneller; Menues, Itemnamen und Kampftexte bleiben.
 Die Original-ROM wird nur gelesen. Geaendert werden:
-  1. Text-Archiv a/0/0/2 (Eintraege 63, 64, 481, 482; Zeilen 179-182): Namen/Beschreibungen.
+  1. Text-Archiv a/0/0/2 (Eintraege 63, 64, 481, 482; Zeilen 548-564 = Edelsteine): Namen/Beschreibungen.
   2. Overlay 36 (Kampf): drei Einhaengestellen in der Funktion, die wilde Pokemon erzeugt.
   3. ARM9 (wird dafuer entpackt gespeichert): Zusatzfunktionen in einem ungenutzten Block.
-Finden: Wilde Pokemon tragen mit Chance 1 zu N einen zufaelligen Charm (Fangen, dann Item nehmen).
-Wirkung: Beim naechsten wilden Pokemon wird je 1 Charm aus dem Beutel verbraucht:
-  Shiny Charm (179)    -> das Pokemon ist (fast sicher) shiny
-  100% IV Charm (180)  -> alle IVs 31
-  Legendary Charm (181)-> zufaelliges legendaeres Pokemon (Level wie die Begegnung)
-  Static Charm (182)   -> zufaelliges Pokemon mit 600+ Basiswerten (Level wie die Begegnung)
+Finden: Die 17 Edelsteine liegen als versteckte Items in der Welt; wilde Pokemon tragen mit Chance 1 zu N
+  einen zufaelligen Edelstein-Charm (Fangen, dann Item nehmen).
+Wirkung: Beim naechsten wilden Pokemon wird jeder Charm im Beutel (je 1 Stueck) verbraucht:
+  Shiny Charm (8 Items)     -> das Pokemon ist (fast sicher) shiny
+  100% IV Charm (4 Items)   -> alle IVs 31
+  Legendary Charm (3 Items) -> zufaelliges legendaeres Pokemon (Level wie die Begegnung)
+  Static Charm (2 Items)    -> zufaelliges Pokemon mit 600+ Basiswerten (Level wie die Begegnung)
 """
 import os
 import struct
@@ -52,20 +54,22 @@ OV_ID = 36
 OV_RAM_ADDR = 0x0217F600
 OV_RAM_SIZE = 0x561A0
 ARM9_BASE = 0x02004000
-DEFAULT_ITEMS = (179, 180, 181, 182)  # Shiny, IV, Legendary, Static
-ITEM_IDS = DEFAULT_ITEMS
 NITRO_MAGIC = b"\x21\x06\xc0\xde"  # Modulparameter-Kennung im ARM9
 
-CHARMS = {  # Zeile: (Name, Beschreibung)
-    179: ("Shiny Charm",
-          "Makes the next wild Pokémon you\nmeet shiny. Used up after one\nencounter."),
-    180: ("100% IV Charm",
-          "Makes the next wild Pokémon you\nmeet have perfect IVs. Used up\nafter one encounter."),
-    181: ("Legendary Charm",
-          "Makes the next wild encounter a\nlegendary Pokémon. Used up after\none encounter."),
-    182: ("Static Charm",
-          "Makes the next wild Pokémon have\n600+ base stats, like a static\nencounter. Used up after use."),
+# Die 17 Edelsteine (Gems, Item 548..564) sind die Charms. Gruppen: (Bit, Name, Beschreibung)
+GROUP_TEXT = {
+    0: ("Shiny Charm", "Makes the next wild Pokémon you\nmeet shiny. Used up after one\nencounter."),
+    1: ("100% IV Charm", "Makes the next wild Pokémon you\nmeet have perfect IVs. Used up\nafter one encounter."),
+    2: ("Legendary Charm", "Makes the next wild encounter a\nlegendary Pokémon. Used up after\none encounter."),
+    3: ("Static Charm", "Makes the next wild Pokémon have\n600+ base stats, like a static\nencounter. Used up after use."),
 }
+GROUPS = tuple((bit, tuple(ids)) for bit, ids in CC.GROUPS)
+CHARM_ITEMS = tuple(i for _, ids in GROUPS for i in ids)  # 17 Edelsteine
+CHARMS = {}  # Zeile (= Item-Nummer): (Name, Beschreibung)
+for _bit, _ids in GROUPS:
+    for _i in _ids:
+        CHARMS[_i] = GROUP_TEXT[_bit]
+GEM_WORDS = ("gem", "joia", "jóia", "jewel")  # Namenspruefung: die Items muessen Edelsteine sein
 
 
 def rol3(k):
@@ -208,16 +212,23 @@ def patch_overlay(rom):
 FIND_RATE = CC.FIND_RATE_DEFAULT  # wilde Pokemon tragen mit Chance 1 zu N einen Charm
 
 
-def cave_blob(item_ids, find_rate=None):
-    """Zusatzcode mit den gewuenschten Item-IDs (Standard 179-182) und Fundchance 1 zu N."""
+def cave_blob(test_items=None, find_rate=None):
+    """Zusatzcode. Standard: die 17 Edelsteine. Mit test_items=(A,B,C,D): je Gruppe nur dieses eine Item."""
     find_rate = FIND_RATE if find_rate is None else find_rate
     blob = bytearray(CC.CAVE_BLOB)
     o = CC.FIND_RATE_OFFSET
     assert blob[o] == CC.FIND_RATE_DEFAULT and blob[o + 1] == 0x20, "Zusatzcode unerwartet aufgebaut"
     blob[o] = find_rate
-    for off, default, new in zip(CC.ITEM_ID_OFFSETS, DEFAULT_ITEMS, item_ids):
-        assert blob[off] == default and blob[off + 1] == 0x21, "Zusatzcode unerwartet aufgebaut"
-        blob[off] = new
+    k = 0
+    for bit, ids in GROUPS:
+        for n, gem in enumerate(ids):
+            off = CC.ITEM_LOAD_OFFSETS[k]
+            k += 1
+            expect = bytes([gem >> 8, 0x21, 0x09, 0x02, gem & 255, 0x31])
+            assert bytes(blob[off:off + 6]) == expect, "Zusatzcode unerwartet aufgebaut"
+            if test_items:
+                new = test_items[bit] if n == 0 else 0xFFFF  # 0xFFFF = kein Item
+                blob[off:off + 6] = bytes([new >> 8, 0x21, 0x09, 0x02, new & 255, 0x31])
     return bytes(blob)
 
 
@@ -238,7 +249,7 @@ def read_arm9(rom):
     return blz_decompress(raw)
 
 
-def patch_arm9(rom, item_ids, find_rate=None):
+def patch_arm9(rom, test_items=None, find_rate=None):
     """Gibt den entpackten, gepatchten ARM9 zurueck."""
     a9 = bytearray(read_arm9(rom))
     cave = CC.CAVE_ADDR - ARM9_BASE
@@ -246,7 +257,7 @@ def patch_arm9(rom, item_ids, find_rate=None):
     if hashlib.sha1(bytes(a9[cave:cave + n])).hexdigest() != CC.CAVE_ORIG_SHA1:
         sys.exit("Der Platz fuer den Zusatzcode im ARM9 passt nicht zum erwarteten Original. "
                  "Diese ROM-Version (oder schon gepatcht?) wird nicht unterstuetzt. Nichts geschrieben.")
-    a9[cave:cave + n] = cave_blob(item_ids, find_rate)
+    a9[cave:cave + n] = cave_blob(test_items, find_rate)
     cse = module_params_offset(a9) + 0x14  # "compressed_static_end": 0 = nicht komprimiert
     struct.pack_into("<I", a9, cse, 0)
     return bytes(a9)
@@ -277,7 +288,6 @@ BALL_SCRIPT_LEN = 26
 TM_RANGE = range(328, 428)  # TMs/HMs: werden standardmaessig nicht ersetzt
 STARTER_SCRIPT = 854
 STARTER_OFFSETS = ((0x58B, 0x590, 0x595), (0x5C0, 0x5C5, 0x5CA), (0x5E2, 0x5E7, 0x5EC))
-CHARM_ITEMS = (179, 180, 181, 182)
 QUIET = False
 
 
@@ -367,7 +377,7 @@ def convert_items(entry, positions, percent, rng):
     changed = []
     for i, p in enumerate(positions):
         old = u16(entry, p)
-        if old in TM_RANGE:
+        if old in TM_RANGE or old in CHARM_ITEMS:
             continue
         if rng.random() * 100 < percent:
             new = rng.choice(CHARM_ITEMS)
@@ -416,8 +426,25 @@ def expected_text(rom, quiet):
     return res
 
 
+def check_gem_names(baseline):
+    """Bricht ab, wenn die Items 548..564 keine Edelsteine sind (Namenspruefung, Eintrag 64)."""
+    header, lines = parse_text_entry(baseline[64])
+    bad = []
+    for gem in CHARM_ITEMS:
+        words = crypt_words(raw_to_words(lines[gem][0]), gem)
+        name = "".join(chr(w) for w in words if 32 <= w < 0xF000).lower()
+        if not any(w in name for w in GEM_WORDS):
+            bad.append((gem, name))
+    if bad:
+        print("Die Items 548..564 sind in dieser ROM keine Edelsteine (oder schon umbenannt):")
+        for gem, name in bad:
+            print(f"  {gem}: {name}")
+        sys.exit("Nichts geschrieben. Bitte diese Liste an Claude schicken.")
+
+
 def charm_patch(baseline):
-    """Namen und Beschreibungen der vier Charms in die Eintraege schreiben (Kopie)."""
+    """Namen und Beschreibungen der Charms in die Eintraege schreiben (Kopie)."""
+    check_gem_names(baseline)
     out = list(baseline)
     names = {ln: v[0] for ln, v in CHARMS.items()}
     descs = {ln: v[1] for ln, v in CHARMS.items()}
@@ -427,7 +454,7 @@ def charm_patch(baseline):
     return out
 
 
-def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False, ground=None, rand=None):
+def patch_rom(rom, test_items=None, quiet=False, ground=None, rand=None):
     texts = expected_text(rom, quiet)
     fid, entries, baseline, btnf, _ = texts[TEXT_NARC]
     new_entries = charm_patch(baseline)
@@ -456,7 +483,7 @@ def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False, ground=None, rand=None):
         texts["scripts"] = (sf, sold, snew, sbtnf, sinfo)
         blobs.append(("text", sf, build_narc(snew, sbtnf)))
     ov_new = patch_overlay(rom)
-    a9_new = patch_arm9(rom, item_ids)
+    a9_new = patch_arm9(rom, test_items)
 
     out = bytearray(rom)
     ov_off = u32(rom, 0x50) + OV_ID * 32
@@ -501,7 +528,7 @@ def diff_ranges(a, b):
     return out
 
 
-def verify(old_rom, new_rom, texts, item_ids, quiet=False):
+def verify(old_rom, new_rom, texts, test_items, quiet=False):
     fid, s, e = find_text_narc(new_rom)
     got = read_narc(new_rom, s, e)
     _, old_entries, baseline, _, _ = texts[TEXT_NARC]
@@ -533,7 +560,7 @@ def verify(old_rom, new_rom, texts, item_ids, quiet=False):
         assert diff_idx <= allowed, "Unerlaubte Skriptdatei veraendert"
         for lst in (sinfo["balls"], sinfo["hidden"]):
             for _, old_item, new_item in lst:
-                assert new_item in CHARM_ITEMS and old_item not in TM_RANGE
+                assert new_item in CHARM_ITEMS and old_item not in TM_RANGE and old_item not in CHARM_ITEMS
         if sinfo["starters"]:
             for offs, new in zip(STARTER_OFFSETS, sinfo["starters"]):
                 for o in offs:
@@ -577,24 +604,26 @@ def verify(old_rom, new_rom, texts, item_ids, quiet=False):
     allowed = [(cave, cave + len(CC.CAVE_BLOB)), (cse, cse + 4)]
     for lo, hi in diff_ranges(a9_old, a9_new):
         assert any(s0 <= lo and hi <= s1 for s0, s1 in allowed), "ARM9 ausserhalb der Stellen veraendert"
-    assert a9_new[cave:cave + len(CC.CAVE_BLOB)] == cave_blob(item_ids), "Zusatzcode falsch"
+    assert a9_new[cave:cave + len(CC.CAVE_BLOB)] == cave_blob(test_items), "Zusatzcode falsch"
     assert u32(a9_new, cse) == 0, "ARM9 noch als komprimiert markiert"
     assert u32(new_rom, 0x2C) == len(a9_new), "ARM9-Groesse im Kopf falsch"
 
 
-def main(src, dst, item_ids=DEFAULT_ITEMS, quiet=False, ground=None, rand=None):
+def main(src, dst, test_items=None, quiet=False, ground=None, rand=None):
     if os.path.abspath(src) == os.path.abspath(dst):
         sys.exit("Ziel darf nicht die Original-ROM sein.")
     with open(src, "rb") as f:
         rom = f.read()
-    new_rom, old_entries, new_entries, texts = patch_rom(rom, item_ids, quiet, ground, rand)
-    verify(rom, new_rom, texts, item_ids, quiet)
+    new_rom, old_entries, new_entries, texts = patch_rom(rom, test_items, quiet, ground, rand)
+    verify(rom, new_rom, texts, test_items, quiet)
     with open(dst, "xb") as f:
         f.write(new_rom)
     print(f"Fertig: {dst} ({len(new_rom)} Bytes). Original unveraendert.")
-    names = ("Shiny Charm", "100% IV Charm", "Legendary Charm", "Static Charm")
-    for n, i in zip(names, item_ids):
-        print(f"  {n}: Item {i}")
+    print("Charms (Edelsteine):")
+    for bit, ids in GROUPS:
+        print(f"  {GROUP_TEXT[bit][0]}: {len(ids)} Items (Nr. {ids[0]}-{ids[-1]})")
+    if test_items:
+        print("TESTMODUS: Der Effekt haengt zusaetzlich nur an den Items " + ", ".join(str(x) for x in test_items))
     print("Wirkung: beim naechsten wilden Pokemon wird je 1 Charm aus dem Beutel verbraucht.")
     print(f"Finden: wilde Pokemon tragen mit Chance 1 zu {FIND_RATE} einen zufaelligen Charm.")
     if quiet:
@@ -613,9 +642,10 @@ def main(src, dst, item_ids=DEFAULT_ITEMS, quiet=False, ground=None, rand=None):
             print(f"Versteckte Items: {len(info['hidden'])} von 213 sind jetzt Charms "
                   f"({ground['hidden']} %, Zufall-Startwert {ground['seed']}).")
 
+
 if __name__ == "__main__":
     args = sys.argv[1:]
-    items = DEFAULT_ITEMS
+    items = None
     if "--test-items" in args:
         k = args.index("--test-items")
         try:
@@ -667,5 +697,4 @@ if __name__ == "__main__":
         del args[k:k + 2]
     if len(args) != 2:
         sys.exit(__doc__)
-    ITEM_IDS = items
     main(args[0], args[1], items, quiet, ground, rand)

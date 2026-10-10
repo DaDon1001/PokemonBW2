@@ -49,8 +49,15 @@ def wild_entry(seed, blocks):
 
 def main(code_dir, out_path, data_dir=None):
     btnf = b"BTNF" + struct.pack("<I", 16) + struct.pack("<IHH", 4, 0, 1)
-    ents2 = [mk([f"Item{k}-{i}" + ("\x01\x02\x03" if (k + i) % 7 == 0 else "") for i in range(200)],
-                prefix=(k == 481)) for k in range(483)]
+    def lines2(k):
+        n = 640 if k in (63, 64, 481, 482) else 200
+        ls = [f"Item{k}-{i}" + ("\x01\x02\x03" if (k + i) % 7 == 0 and k not in (63, 64, 481, 482) else "")
+              for i in range(n)]
+        if k in (64, 481, 482):
+            for g in range(548, 565):
+                ls[g] = f"Gema {g}"
+        return ls
+    ents2 = [mk(lines2(k), prefix=(k == 481)) for k in range(483)]
     ents3 = [mk([f"Dialog{k}-{i}" + ("\x01\x02\x03" if i % 2 == 0 else "") for i in range(30)]) for k in range(40)]
     ents5 = [b"\x13\xfd\x00\x00"] * 1241 + [balls()] + [b"\x13\xfd\x00\x00"] * 3
     ents7 = [wild_entry(k, 4 if k % 11 == 0 else 1) for k in range(20)]

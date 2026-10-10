@@ -25,7 +25,7 @@ def go(held,rate_roll,charm_roll):
 ok=0
 for held in (0,0x1234,5):
     for rate_roll in (0,1,19):
-        for charm_roll in range(4):
+        for charm_roll in range(17):
             mu,calls=go(held,rate_roll,charm_roll)
             r2=mu.reg_read(UC_ARM_REG_R2); r0=mu.reg_read(UC_ARM_REG_R0)
             assert r0==0x27e,hex(r0)
@@ -35,7 +35,7 @@ for held in (0,0x1234,5):
             if held!=0:
                 assert r2==held and calls==[],(held,r2,calls)
             elif rate_roll==0:
-                assert r2==179+charm_roll and calls==[B.FIND_RATE_DEFAULT,4],(r2,calls)
+                assert r2==548+charm_roll and calls==[B.FIND_RATE_DEFAULT,17],(r2,calls)
             else:
                 assert r2==0 and calls==[B.FIND_RATE_DEFAULT]
             ok+=1

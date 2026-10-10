@@ -6,6 +6,16 @@ LEG=[144,145,146,150,151,243,244,245,249,250,251,377,378,379,380,381,382,383,384
 STA=[149,150,151,248,249,250,251,289,373,376,380,381,382,383,384,385,386,445,483,484,485,486,487,488,
      490,491,492,493,494,635,643,644,645,646,648,649]
 FIND_RATE_DEFAULT=20
+# Edelsteine (Gems) als Charms: Item 548..564; Bit 0 Shiny, 1 IV, 2 Legendary, 3 Static
+GROUPS=[(0,range(548,556)),(1,range(556,560)),(2,range(560,563)),(3,range(563,565))]
+def takes():
+    out=[]
+    for bit,ids in GROUPS:
+        for i in ids:
+            out.append(f"  adds r0, r7, #0\n  movs r1, #{i>>8}\n  lsls r1, r1, #8\n  adds r1, #{i&255}\n"
+                       f"  movs r2, #1\n  movs r3, #4\n  bl #0x200842c\n"
+                       +(f"  lsls r0, r0, #{bit}\n" if bit else "")+"  orrs r6, r0\n")
+    return "".join(out)
 def src():
     s=f"""
 .thumb
@@ -15,34 +25,7 @@ helper_entry:
   ldr r0, [r5]
   bl #0x2017354
   adds r7, r0, #0
-  adds r0, r7, #0
-  movs r1, #179
-  movs r2, #1
-  movs r3, #4
-  bl #0x200842c
-  orrs r6, r0
-  adds r0, r7, #0
-  movs r1, #180
-  movs r2, #1
-  movs r3, #4
-  bl #0x200842c
-  lsls r0, r0, #1
-  orrs r6, r0
-  adds r0, r7, #0
-  movs r1, #181
-  movs r2, #1
-  movs r3, #4
-  bl #0x200842c
-  lsls r0, r0, #2
-  orrs r6, r0
-  adds r0, r7, #0
-  movs r1, #182
-  movs r2, #1
-  movs r3, #4
-  bl #0x200842c
-  lsls r0, r0, #3
-  orrs r6, r0
-  ldr r0, flagp_a
+{takes()}  ldr r0, flagp_a
   str r6, [r0]
   movs r0, #4
   tst r6, r0
@@ -126,10 +109,12 @@ helper_hold:
   bl #0x2005748
   cmp r0, #0
   bne keep_h
-  movs r0, #4
+  movs r0, #17
   bl #0x2005748
-  adds r2, r0, #0
-  adds r2, #179
+  movs r1, #2
+  lsls r1, r1, #8
+  adds r1, #36
+  adds r2, r0, r1
   b out_h
 keep_h:
   ldrh r2, [r4, #2]

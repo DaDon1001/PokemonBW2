@@ -28,10 +28,19 @@ def main(arm9_path):
     a9 = open(arm9_path, "rb").read()
     cave = B.CAVE - 0x02004000
     sha = hashlib.sha1(a9[cave:cave + len(blob)]).hexdigest()
-    ids = [off for off in range(0, len(blob) - 1, 2) if blob[off + 1] == 0x21 and blob[off] in (179, 180, 181, 182)]
+    # Orte der 17 Item-Ladebefehle (movs r1,#hi / lsls r1,r1,#8 / adds r1,#lo) in helper_entry, in Reihenfolge
+    ids, pos = [], 0
+    gem_ids = [i for _, rng_ in B.GROUPS for i in rng_]
+    for gid in gem_ids:
+        pat = bytes([gid >> 8, 0x21, 0x09, 0x02, gid & 255, 0x31])
+        o = blob.find(pat, pos)
+        assert o >= 0 and o < syms["helper_count"] - B.CAVE, gid
+        ids.append(o)
+        pos = o + 6
     hold = syms["helper_hold"] - B.CAVE
     rate = [o for o in range(hold, hold + 0x20, 2) if blob[o] == B.FIND_RATE_DEFAULT and blob[o + 1] == 0x20]
-    assert len(ids) == 4 and len(rate) == 1, (ids, rate)
+    assert len(ids) == 17 and len(rate) == 1, (ids, rate)
+    groups = [(bit, list(r)) for bit, r in B.GROUPS]
     lines = []
     for addr, orig, fn, rest in SITES:
         new = B.thumb_bl(addr, syms[fn]) + rest
@@ -48,8 +57,12 @@ CAVE_BLOB = bytes.fromhex(
 )
 # SHA1 der {len(blob)} Original-Bytes an dieser Stelle (Sicherheitspruefung gegen andere ROM-Versionen)
 CAVE_ORIG_SHA1 = "{sha}"
-# Offsets (im Blob) der vier Item-IDs 179..182 (Befehl "movs r1, #id")
-ITEM_ID_OFFSETS = {tuple(ids)}
+# Charm-Items: die 17 Edelsteine (Gems), Item 548..564. Gruppen (Bit, Item-IDs):
+# Bit 0 Shiny Charm (8 Items), Bit 1 100% IV Charm (4), Bit 2 Legendary Charm (3), Bit 3 Static Charm (2)
+GROUPS = {groups!r}
+# Offsets (im Blob) der 17 Item-Ladebefehle (je 6 Bytes: movs r1,#hi / lsls r1,r1,#8 / adds r1,#lo),
+# in der Reihenfolge der Items in GROUPS
+ITEM_LOAD_OFFSETS = {tuple(ids)}
 # Offset (im Blob) der Fundchance "1 zu N" (Befehl "movs r0, #N"), Standard {B.FIND_RATE_DEFAULT}
 FIND_RATE_OFFSET = {rate[0]}
 FIND_RATE_DEFAULT = {B.FIND_RATE_DEFAULT}
