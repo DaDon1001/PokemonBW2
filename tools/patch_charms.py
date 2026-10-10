@@ -7,6 +7,8 @@ Aufruf:  python tools/patch_charms.py "original.nds" "neue_rom.nds" [--test-item
   --test-items A,B,C,D: Test-Variante. Statt der Beeren (179-182) werden vier andere Item-IDs
       (1-255) als Charms benutzt, z. B. 17,18,19,20 (Tranke). Reihenfolge: Shiny, IV, Legendary,
       Static. Nur zum Ausprobieren ohne Cheat.
+  --quiet-dialog: Ersetzt jeden gesprochenen Text (Dialoge mit "Warte auf Taste"-Steuercode) durch
+      einen einzelnen Punkt. Alles geht schneller; Menues, Itemnamen und Kampftexte bleiben.
 Die Original-ROM wird nur gelesen. Geaendert werden:
   1. Text-Archiv a/0/0/2 (Eintraege 63, 64, 481, 482; Zeilen 179-182): Namen/Beschreibungen.
   2. Overlay 36 (Kampf): drei Einhaengestellen in der Funktion, die wilde Pokemon erzeugt.
@@ -239,26 +241,83 @@ def patch_arm9(rom, item_ids, find_rate=None):
     return bytes(a9)
 
 
-def find_text_narc(rom):
+def find_narc(rom, path):
     paths = parse_fnt(rom, u32(rom, 0x40), u32(rom, 0x44))
-    fid = next((i for i, p in paths.items() if p == TEXT_NARC), None)
+    fid = next((i for i, p in paths.items() if p == path), None)
     if fid is None:
-        sys.exit(f"{TEXT_NARC} nicht gefunden")
+        sys.exit(f"{path} nicht gefunden")
     s, e = struct.unpack_from("<II", rom, u32(rom, 0x48) + fid * 8)
     return fid, s, e
 
 
-def patch_rom(rom, item_ids=DEFAULT_ITEMS):
-    fid, s, e = find_text_narc(rom)
-    entries = read_narc(rom, s, e)
-    btnf = parse_narc_blocks(rom, s)
+def find_text_narc(rom):
+    return find_narc(rom, TEXT_NARC)
+
+
+WAIT_TAG = [0xF000, 0xBE01, 0x0000]  # "Warte auf Taste" (Seitenwechsel im Dialog)
+QUIET_WORDS = [ord("."), 0xF000, 0xBE01, 0x0000, 0xFFFF]
+DIALOG_NARCS = ("a/0/0/2", "a/0/0/3")
+QUIET = False
+
+
+def has_wait_tag(words):
+    return any(words[i:i + 3] == WAIT_TAG for i in range(len(words) - 2))
+
+
+def quiet_entry(data):
+    """Ersetzt alle Dialogzeilen eines Text-Archivs durch '.' + Warte-Code. Gibt (Daten, Anzahl) zurueck."""
+    if len(data) < 0x14 or u16(data, 0) != 1 or u16(data, 2) == 0:
+        return data, 0
+    header, lines = parse_text_entry(data)
+    count = 0
+    for i, line in enumerate(lines):
+        words = crypt_words(raw_to_words(line[0]), i)
+        if has_wait_tag(words):
+            line[0] = words_to_raw(crypt_words(QUIET_WORDS, i))
+            count += 1
+    return (build_text_entry(header, lines) if count else data), count
+
+
+def quiet_entries(entries):
+    out, total = [], 0
+    for d in entries:
+        nd, c = quiet_entry(d)
+        out.append(nd)
+        total += c
+    return out, total
+
+
+def expected_text(rom, quiet):
+    """Gibt {Pfad: (fid, Original-Eintraege, erwartete neue Eintraege, BTNF, Anzahl ersetzter Zeilen)}."""
+    res = {}
+    paths = DIALOG_NARCS if quiet else (TEXT_NARC,)
+    for path in paths:
+        fid, s, e = find_narc(rom, path)
+        entries = read_narc(rom, s, e)
+        new, cnt = quiet_entries(entries) if quiet else (list(entries), 0)
+        res[path] = (fid, entries, new, parse_narc_blocks(rom, s), cnt)
+    return res
+
+
+def charm_patch(baseline):
+    """Namen und Beschreibungen der vier Charms in die Eintraege schreiben (Kopie)."""
+    out = list(baseline)
     names = {ln: v[0] for ln, v in CHARMS.items()}
     descs = {ln: v[1] for ln, v in CHARMS.items()}
-    new_entries = list(entries)
     for idx in NAME_ENTRIES:
-        new_entries[idx] = patch_entry(entries[idx], idx, names)
-    new_entries[DESC_ENTRY] = patch_entry(entries[DESC_ENTRY], DESC_ENTRY, descs)
-    narc = build_narc(new_entries, btnf)
+        out[idx] = patch_entry(baseline[idx], idx, names)
+    out[DESC_ENTRY] = patch_entry(baseline[DESC_ENTRY], DESC_ENTRY, descs)
+    return out
+
+
+def patch_rom(rom, item_ids=DEFAULT_ITEMS, quiet=False):
+    texts = expected_text(rom, quiet)
+    fid, entries, baseline, btnf, _ = texts[TEXT_NARC]
+    new_entries = charm_patch(baseline)
+    blobs = [("text", fid, build_narc(new_entries, btnf))]
+    if quiet:
+        f3, _, n3, b3, _ = texts["a/0/0/3"]
+        blobs.append(("text", f3, build_narc(n3, b3)))
     ov_new = patch_overlay(rom)
     a9_new = patch_arm9(rom, item_ids)
 
@@ -266,12 +325,12 @@ def patch_rom(rom, item_ids=DEFAULT_ITEMS):
     ov_off = u32(rom, 0x50) + OV_ID * 32
     fat = u32(rom, 0x48)
     pos = max(len(rom), u32(rom, 0x80))
-    for kind, blob in (("text", narc), ("ov", ov_new), ("arm9", a9_new)):
+    for kind, file_id, blob in blobs + [("ov", None, ov_new), ("arm9", None, a9_new)]:
         pos += -pos % 0x200
         out += b"\0" * (pos - len(out))
         out += blob
         if kind == "text":
-            struct.pack_into("<II", out, fat + fid * 8, pos, pos + len(blob))
+            struct.pack_into("<II", out, fat + file_id * 8, pos, pos + len(blob))
         elif kind == "ov":  # Overlay 36 unkomprimiert: FAT und Overlay-Tabelle anpassen
             struct.pack_into("<II", out, fat + u32(rom, ov_off + 24) * 8, pos, pos + len(blob))
             struct.pack_into("<I", out, ov_off + 28, 0x02000000)
@@ -285,7 +344,7 @@ def patch_rom(rom, item_ids=DEFAULT_ITEMS):
     if u16(rom, 0x6C) == crc16(a9_old[:0x4000]):
         struct.pack_into("<H", out, 0x6C, crc16(a9_new[:0x4000]))
     struct.pack_into("<H", out, 0x15E, crc16(bytes(out[:0x15E])))
-    return bytes(out), entries, new_entries
+    return bytes(out), entries, new_entries, texts
 
 
 def diff_ranges(a, b):
@@ -304,15 +363,22 @@ def diff_ranges(a, b):
     return out
 
 
-def verify(old_rom, new_rom, old_entries, new_entries, item_ids):
+def verify(old_rom, new_rom, texts, item_ids, quiet=False):
     fid, s, e = find_text_narc(new_rom)
     got = read_narc(new_rom, s, e)
+    _, old_entries, baseline, _, _ = texts[TEXT_NARC]
+    new_entries = charm_patch(baseline)
     assert len(got) == len(new_entries), "Eintragszahl falsch"
     changed = set(NAME_ENTRIES) | {DESC_ENTRY}
-    for i, (g, n, o) in enumerate(zip(got, new_entries, old_entries)):
+    for i, (g, n, b0) in enumerate(zip(got, new_entries, baseline)):
         assert g == n, f"Eintrag {i} nach dem Schreiben anders"
         if i not in changed:
-            assert g == o, f"Eintrag {i} ungewollt veraendert"
+            assert g == b0, f"Eintrag {i} ungewollt veraendert"
+    if quiet:
+        f3, s3, e3 = find_narc(new_rom, "a/0/0/3")
+        got3 = read_narc(new_rom, s3, e3)
+        assert got3 == texts["a/0/0/3"][2], "Dialog-Archiv a/0/0/3 stimmt nicht"
+        assert sum(t[4] for t in texts.values()) > 0, "Keine Dialogzeilen gefunden"
     assert u16(new_rom, 0x15E) == crc16(new_rom[:0x15E]), "Header-CRC falsch"
     # Overlay 36: nur die Einhaengestellen duerfen abweichen
     _, _, ov_old = read_overlay(old_rom, OV_ID)
@@ -339,13 +405,13 @@ def verify(old_rom, new_rom, old_entries, new_entries, item_ids):
     assert u32(new_rom, 0x2C) == len(a9_new), "ARM9-Groesse im Kopf falsch"
 
 
-def main(src, dst, item_ids=DEFAULT_ITEMS):
+def main(src, dst, item_ids=DEFAULT_ITEMS, quiet=False):
     if os.path.abspath(src) == os.path.abspath(dst):
         sys.exit("Ziel darf nicht die Original-ROM sein.")
     with open(src, "rb") as f:
         rom = f.read()
-    new_rom, old_entries, new_entries = patch_rom(rom, item_ids)
-    verify(rom, new_rom, old_entries, new_entries, item_ids)
+    new_rom, old_entries, new_entries, texts = patch_rom(rom, item_ids, quiet)
+    verify(rom, new_rom, texts, item_ids, quiet)
     with open(dst, "xb") as f:
         f.write(new_rom)
     print(f"Fertig: {dst} ({len(new_rom)} Bytes). Original unveraendert.")
@@ -354,6 +420,9 @@ def main(src, dst, item_ids=DEFAULT_ITEMS):
         print(f"  {n}: Item {i}")
     print("Wirkung: beim naechsten wilden Pokemon wird je 1 Charm aus dem Beutel verbraucht.")
     print(f"Finden: wilde Pokemon tragen mit Chance 1 zu {FIND_RATE} einen zufaelligen Charm.")
+    if quiet:
+        n = sum(t[4] for t in texts.values())
+        print(f"Dialoge: {n} gesprochene Textzeilen durch '.' ersetzt.")
 
 
 if __name__ == "__main__":
@@ -368,6 +437,9 @@ if __name__ == "__main__":
         if len(items) != 4 or not all(1 <= x <= 255 for x in items) or len(set(items)) != 4:
             sys.exit("--test-items: genau vier verschiedene IDs zwischen 1 und 255, z. B. 17,18,19,20")
         del args[k:k + 2]
+    quiet = "--quiet-dialog" in args
+    if quiet:
+        args.remove("--quiet-dialog")
     if "--find-rate" in args:
         k = args.index("--find-rate")
         try:
@@ -380,4 +452,4 @@ if __name__ == "__main__":
     if len(args) != 2:
         sys.exit(__doc__)
     ITEM_IDS = items
-    main(args[0], args[1], items)
+    main(args[0], args[1], items, quiet)

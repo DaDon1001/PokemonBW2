@@ -30,6 +30,7 @@ Gemeinsamer Mechanismus: Beim Benutzen wird im Spielstand ein "wartender Charm" 
 - [x] Poke-Markt-Lieferung gestrichen (Nutzerwunsch). Stattdessen **Finden**: Wilde Pokemon tragen mit Chance 1 zu N (Standard 20) einen zufaelligen Charm als Item (Overlay 36, 0x021a0e56 -> helper_hold). Faengt man das Pokemon, kann man das Item nehmen. Parameter `--find-rate N`.
 - [ ] Weitere Fund-Quellen (Boden, versteckte Items, Kampfbelohnung) und Spielmeldungen: noch offen. Funktion zum Item-Hinzufuegen: 0x02008268 (bag,item,qty,heap).
 - Hinweis: Textarchiv 40 = Festival-Missionen, 384 = C-Gear-Anrufe (nicht der Markt).
+- [x] Option `--quiet-dialog`: ersetzt alle Dialogzeilen (Warte-auf-Taste-Code F000 BE01 0000) in a/0/0/2 und a/0/0/3 durch '.' + denselben Code.
 - [ ] Item-Datentabelle (Berries → Charms: Name, Beschreibung, Preis, Icon)
 - [ ] Code-Hooks (brauchen die genauen Adressen aus dem Report der eigenen ROM)
 
