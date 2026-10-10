@@ -2,12 +2,14 @@
 
 Ziel: ungenutzte Beeren werden zu Charms mit neuen Effekten.
 
-| Charm | Effekt | Umsetzung (Plan) |
+| Charm | Beere (ID) | Effekt |
 |---|---|---|
-| Shiny Charm | Das nächste wilde Pokémon ist shiny | Flag setzen beim Item-Benutzen, Hook in der Wild-Pokémon-Erzeugung wählt PID so, dass es shiny ist, Flag danach löschen |
-| 100%-IV-Charm | Das nächste wilde Pokémon hat perfekte IVs (31) | gleicher Hook, IVs auf 31 setzen |
-| Legendary Charm | Nächste Begegnung ist ein legendäres Pokémon | Hook ersetzt Art und Level der Begegnung |
-| Static Charm | Statische Begegnungen/Gebiete werden erzwungen | Hook auf die Begegnungstabelle |
+| Shiny Charm | Spelon (179) | Der nächste wilde Encounter ist shiny |
+| 100%-IV-Charm | Pamtre (180) | Der nächste wilde Encounter hat perfekte IVs (31 in allen Werten) |
+| Legendary Charm | Watmel (181) | Der nächste wilde Encounter ist ein legendäres Pokémon |
+| Static Charm | Durin (182) | Der nächste wilde Encounter hat 600+ Basiswerte (BST), wie ein Static-Pokémon |
+
+Gemeinsamer Mechanismus: Beim Benutzen wird im Spielstand ein "wartender Charm" (1 von 4) gesetzt und das Item verbraucht. Ein Hook in der Wild-Encounter-Erzeugung liest das Flag, wendet den Effekt an und löscht es danach.
 
 ## Stand
 
