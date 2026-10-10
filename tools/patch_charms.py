@@ -558,7 +558,9 @@ def verify(old_rom, new_rom, texts, item_ids, quiet=False):
     cave = CC.CAVE_ADDR - ARM9_BASE
     cse = module_params_offset(a9_new) + 0x14
     # In den ersten 0x4000 Bytes (Secure Area) darf nur das Kompressions-Feld abweichen
-    assert diff_ranges(a9_old[:0x4000], a9_new[:0x4000]) == [(cse, cse + 4)], "Secure Area veraendert"
+    # (War der ARM9 schon entpackt, z. B. nach dem ZX-Randomizer, steht das Feld schon auf 0: keine Abweichung.)
+    expected = [] if u32(a9_old, cse) == 0 else [(cse, cse + 4)]
+    assert diff_ranges(a9_old[:0x4000], a9_new[:0x4000]) == expected, "Secure Area veraendert"
     if u16(old_rom, 0x6C) == crc16(a9_old[:0x4000]):
         assert u16(new_rom, 0x6C) == crc16(a9_new[:0x4000]), "Secure-Area-CRC nicht nachgezogen"
     allowed = [(cave, cave + len(CC.CAVE_BLOB)), (cse, cse + 4)]
